@@ -37,6 +37,12 @@ func (m metrics) GPUTempString() string {
 	}
 	return fmt.Sprintf("%.1f°C", m.GPUTemp)
 }
+func (m metrics) GPULoadString() string {
+	if !m.GPULoadValid {
+		return "N/A"
+	}
+	return fmt.Sprintf("%d%%", m.GPULoad)
+}
 func parseColor(s string) (rgb, error) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
 	if len(s) != 6 {

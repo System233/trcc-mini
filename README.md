@@ -22,11 +22,14 @@ Only `trcc-mini.exe` is required at runtime. The officially signed
 
 ```powershell
 .\trcc-mini.exe detect                             # read-only USB enumeration
+.\trcc-mini.exe sensors                            # read-only sensor comparison; no USB I/O
 .\trcc-mini.exe probe                              # handshake ONCE, save PM cache
 .\trcc-mini.exe run -pm 16 -link load              # PA120 example: CPU% linked RGB
 .\trcc-mini.exe run -pm 16 -link temp              # CPU °C linked RGB
 .\trcc-mini.exe run -pm 16 -gpu -link gpu-temp     # optional RTX 4070 GPU
 .\trcc-mini.exe run -gpu -power rotate              # PA120: alternate temperature and watts
+.\trcc-mini.exe run -gpu -cpu-temp-source ccd-avg -power rotate
+.\trcc-mini.exe run -gpu -cpu-temp-source ccd1 -power replace
 .\trcc-mini.exe run -gpu -power replace             # PA120: watts instead of temperature
 .\trcc-mini.exe run -gpu -power rotate -power-period 4s -power-color ff9a00
 .\trcc-mini.exe once -pm 16 -gpu -dry-run -temp 58 -cpu-power 185 -power replace
@@ -57,6 +60,14 @@ PM from its model (use `-pm`, *not* the style ID). A temporary example
   on the test machine, compared with approximately **9 MiB** for CPU-only.
 - AMD Ryzen CPU Tctl: signed official PawnIO AMD Family17-1Ah module, embedded
   in the EXE and loaded through `DeviceIoControl`.
+- Ryzen Zen 4/5 also exposes independent per-CCD chiplet temperatures.
+  Use `-cpu-temp-source tctl` (default), `ccd1`, `ccd2`,
+  `ccd-max` (hottest available CCD), or `ccd-avg` (average).
+  On Ryzen 9950X, these read SMN registers `0x59B08 + 4*n`
+  through PawnIO using `(raw & 0xfff)/8 - 305`.
+  Run `trcc-mini sensors` to compare actual readings without USB writes.
+  These CCD readings are NOT the separate ASUS motherboard `CPU Diode`
+  sensor, which requires a distinct board-specific sensor interface.
 - AMD Ryzen CPU package watts: read `MSR 0xC0010299` for the energy unit
   and `0xC001029B` for the package-energy counter, then divide the
   rollover-safe energy difference by elapsed time (first sample warms up).

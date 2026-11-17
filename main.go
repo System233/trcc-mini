@@ -87,6 +87,7 @@ func usage() {
 	fmt.Println(`TRCC Mini — portable Thermalright 0416:8001 HID CLI (Windows, no GUI)
 Usage:
   trcc-mini detect                           Read-only USB enumeration
+  trcc-mini sensors                          Read-only CPU/GPU sensor diagnostics (no USB)
   trcc-mini probe                            One-time handshake; SAVE model to cache
   trcc-mini run   [-pm 16] [options]          CPU load + temperature display
   trcc-mini once  -pm 16 -dry-run             Generate a frame without USB writes
@@ -99,9 +100,10 @@ Options:
   -link static|temp|load|gpu-temp|gpu-load  RGB sensor-linked color
   -brightness 75         0..100, wire scaling includes original x0.4
   -temp 42               OVERRIDE sensor temperature for testing
+  -cpu-temp-source tctl  tctl|ccd1|ccd2|ccd-max|ccd-avg (Zen 4/5)
   -gpu-temp 42           OVERRIDE GPU temperature for testing
   -gpu-load 42           OVERRIDE GPU load for testing
-  -gpu                   Enable optional NVIDIA NVML GPU sensor
+  -gpu                   Enable NVIDIA NVML GPU temperature/load/power
   -power off|rotate|replace  PA120: rotate/replace 3-digit temperatures with watts
   -power-period 4s       Each PA120 temperature/power display interval
   -power-color ff9a00   Color of watt digits (load digits keep regular color)
@@ -115,6 +117,8 @@ Options:
 Temperature: built-in signed AMD PawnIO module; requires separately installed
 official PawnIO driver and Administrator permission. Without it, never
 substitutes an unrelated motherboard temperature or fake 0°C.
+CCD sensors measure CPU dies, not the ASUS motherboard's CPU Diode sensor.
+For PA120's GPU row you must add -gpu.
 Always stop the vendor TRCC software before sending frames or probing.`)
 }
 
@@ -131,6 +135,12 @@ func run() error {
 		return nil
 	}
 	verb := strings.ToLower(os.Args[1])
+	if verb == "sensors" {
+		if len(os.Args) != 2 {
+			return errors.New("usage: trcc-mini sensors")
+		}
+		return sensorDiagnostics()
+	}
 	if verb != "detect" && verb != "probe" && verb != "run" && verb != "once" {
 		usage()
 		return fmt.Errorf("unknown command %q", verb)
@@ -144,6 +154,7 @@ func run() error {
 	linked := fs.String("link", "static", "static|temp|load|gpu-temp|gpu-load")
 	brightness := fs.Int("brightness", 75, "brightness 0..100")
 	tempOverride := fs.Float64("temp", -999, "explicit test temperature")
+	cpuTempSource := fs.String("cpu-temp-source", "tctl", "tctl|ccd1|ccd2|ccd-max|ccd-avg")
 	gpuTempOverride := fs.Float64("gpu-temp", -999, "explicit test GPU temperature")
 	gpuLoadOverride := fs.Int("gpu-load", -1, "explicit test GPU load")
 	gpuEnabled := fs.Bool("gpu", false, "enable NVML GPU sensor (costs additional RAM)")
@@ -158,6 +169,9 @@ func run() error {
 	verbose := fs.Bool("verbose", false, "status logs")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		return err
+	}
+	if !validCPUTempSource(*cpuTempSource) {
+		return fmt.Errorf("unknown -cpu-temp-source %q (use tctl, ccd1, ccd2, ccd-max, ccd-avg)", *cpuTempSource)
 	}
 	if *period < 200*time.Millisecond || *phasePeriod < 200*time.Millisecond {
 		return errors.New("period and phase must be >=200ms")
@@ -309,7 +323,7 @@ func run() error {
 		var terr error
 		pawn, terr = openPawn()
 		if terr != nil {
-			fmt.Fprintln(os.Stderr, "NOTE: CPU Tctl unavailable:", terr, "; CPU temp digits will be blank")
+			fmt.Fprintf(os.Stderr, "NOTE: CPU temperature source %s unavailable: %v; CPU temperature digits will be blank\n", *cpuTempSource, terr)
 		}
 	}
 	if pawn != nil {
@@ -325,13 +339,15 @@ func run() error {
 	}
 	if gpu != nil {
 		defer gpu.Close()
+	} else if style == 2 && !*gpuEnabled && *gpuTempOverride <= -200 && *gpuLoadOverride < 0 {
+		fmt.Fprintln(os.Stderr, "NOTE: PA120 GPU row has no live data; add -gpu to enable NVIDIA NVML")
 	}
 	var previous []byte
 	start := time.Now()
 	nextPhase := -1
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	fmt.Printf("Running: style=%d, sampling=%s, link=%s, brightness=%d%%, dry=%v\n", style, period.String(), *linked, *brightness, *dryRun)
+	fmt.Printf("Running: style=%d, sampling=%s, cpu-temp-source=%s, link=%s, brightness=%d%%, dry=%v\n", style, period.String(), *cpuTempSource, *linked, *brightness, *dryRun)
 	ticker := time.NewTicker(*period)
 	defer ticker.Stop()
 	for {
@@ -340,7 +356,7 @@ func run() error {
 			m.Temp = *tempOverride
 			m.TempValid = true
 		} else if pawn != nil {
-			if t, e := pawn.Read(); e == nil {
+			if t, e := pawn.ReadTemp(*cpuTempSource); e == nil {
 				m.Temp = t
 				m.TempValid = true
 			} else if *verbose {
@@ -427,7 +443,7 @@ func run() error {
 		if changed || time.Since(start) < *period || phase != nextPhase {
 			if *dryRun {
 				if *verbose {
-					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU %d%%/%s/%.1fW(%t), GPU %d%%/%s/%.1fW(%t), wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), m.CPUPower, m.CPUPowerValid, m.GPULoad, m.GPUTempString(), m.GPUPower, m.GPUPowerValid, cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
+					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU %d%%/%s/%.1fW(%t), GPU %s/%s/%.1fW(%t), wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), m.CPUPower, m.CPUPowerValid, m.GPULoadString(), m.GPUTempString(), m.GPUPower, m.GPUPowerValid, cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
 				}
 			} else {
 				if d == nil {
@@ -452,7 +468,7 @@ func run() error {
 					previous = nil // retry next tick even if the data is unchanged
 				} else {
 					if *verbose {
-						fmt.Printf("CPU load=%d%% temp=%s; GPU load=%d%% temp=%s; phase=%d LEDs=%d\n", m.Load, m.TempString(), m.GPULoad, m.GPUTempString(), phase, activeCount(mask))
+						fmt.Printf("CPU load=%d%% temp=%s; GPU load=%s temp=%s; phase=%d LEDs=%d\n", m.Load, m.TempString(), m.GPULoadString(), m.GPUTempString(), phase, activeCount(mask))
 					}
 					previous = packet
 				}

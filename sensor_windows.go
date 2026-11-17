@@ -65,6 +65,7 @@ type pawnSensor struct {
 	pciMutex     syscall.Handle
 	lastTemp     float64
 	haveLast     bool
+	lastCCDTemp  map[string]float64
 	energyUnit   float64
 	lastEnergy   uint32
 	lastEnergyAt time.Time
@@ -148,14 +149,10 @@ func (p *pawnSensor) Read() (float64, error) {
 		return 0, fmt.Errorf("PCI bus busy (mutex timeout)")
 	}
 	defer pReleaseMutex.Call(uintptr(p.pciMutex))
-	var b [40]byte
-	copy(b[:32], "ioctl_read_smn")
-	binary.LittleEndian.PutUint64(b[32:], 0x00059800)
-	raw, err := p.call(0xA1B22104, b[:], 8)
+	v, err := p.readSMNLocked(0x00059800)
 	if err != nil {
 		return 0, err
 	}
-	v := binary.LittleEndian.Uint64(raw)
 	t := float64(v>>21) * 0.125
 	if v&0x80000 != 0 {
 		t -= 49
@@ -166,6 +163,106 @@ func (p *pawnSensor) Read() (float64, error) {
 	p.lastTemp = t
 	p.haveLast = true
 	return t, nil
+}
+
+// The register at 0x59B08 + 4*n is the per-CCD Tdie sensor on Zen 4/5
+// desktop processors (including Ryzen 9950X, CPUID model 0x44).
+// These readings are not synonymous with an ASUS motherboard CPU Diode sensor.
+func ccdTemperature(raw uint64) (float64, bool) {
+	count := raw & 0xfff
+	if count == 0 {
+		return 0, false // unpopulated CCD
+	}
+	temp := float64(count)*0.125 - 305
+	if temp < 1 || temp > 125 {
+		return 0, false
+	}
+	return temp, true
+}
+
+func validCPUTempSource(source string) bool {
+	switch source {
+	case "tctl", "ccd1", "ccd2", "ccd-max", "ccd-avg":
+		return true
+	}
+	return false
+}
+
+func (p *pawnSensor) ReadTemp(source string) (float64, error) {
+	if source == "tctl" {
+		return p.Read()
+	}
+	if !validCPUTempSource(source) {
+		return 0, fmt.Errorf("unknown CPU temperature source %q", source)
+	}
+	status, _, _ := pWait.Call(uintptr(p.pciMutex), 10)
+	if status != 0 && status != 128 {
+		if v, ok := p.lastCCDTemp[source]; ok {
+			return v, nil
+		}
+		return 0, fmt.Errorf("PCI bus busy (mutex timeout)")
+	}
+	defer pReleaseMutex.Call(uintptr(p.pciMutex))
+	count := 8
+	start := 0
+	if source == "ccd1" || source == "ccd2" {
+		count = 1
+		if source == "ccd2" {
+			start = 1
+		}
+	}
+	var sum, max float64
+	var valid int
+	var firstErr error
+	for i := start; i < start+count; i++ {
+		raw, err := p.readSMNLocked(0x00059B08 + uint64(i)*4)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		value, ok := ccdTemperature(raw)
+		if !ok {
+			continue
+		}
+		valid++
+		sum += value
+		if value > max {
+			max = value
+		}
+	}
+	if valid == 0 {
+		if firstErr != nil {
+			return 0, fmt.Errorf("CCD sensor read: %w", firstErr)
+		}
+		return 0, fmt.Errorf("CCD sensor %q unavailable", source)
+	}
+	value := max
+	if source == "ccd-avg" {
+		value = sum / float64(valid)
+	}
+	if source == "ccd1" || source == "ccd2" {
+		value = sum
+	}
+	if p.lastCCDTemp == nil {
+		p.lastCCDTemp = make(map[string]float64)
+	}
+	p.lastCCDTemp[source] = value
+	return value, nil
+}
+
+// Call only while holding the PCI mutex. PawnIO performs an indexed SMN
+// operation, so reads from concurrent utilities must be serialized.
+func (p *pawnSensor) readSMNLocked(addr uint64) (uint64, error) {
+	var b [40]byte
+	copy(b[:32], "ioctl_read_smn")
+	binary.LittleEndian.PutUint64(b[32:], addr)
+	raw, err := p.call(0xA1B22104, b[:], 8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(raw), nil
 }
 
 func (p *pawnSensor) readMSR(msr uint64) (uint64, error) {
