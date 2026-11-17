@@ -57,13 +57,17 @@ func currentWindowsCPUClocks() (avg, max float64, valid bool) {
 // This function only handles metrics whose provenance is verified. Other
 // indexed names are legitimate config values but stay N/A without a provider.
 func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
-	avg, max, ok := currentWindowsCPUClocks()
-	if ok {
-		m.setExtra("cpu.clock", avg)
-		m.setExtra("cpu.clock.max", max)
-		if physicalCPUCount() == 1 {
-			m.setExtra("cpu0.clock", avg)
-			m.setExtra("cpu0.clock.max", max)
+	if _, clockPresent := m.Extras["cpu.clock"]; !clockPresent {
+		// OS fallback when grouped core clocks are not available. Avoid
+		// making a second power-information query on every 200ms frame.
+		avg, max, ok := currentWindowsCPUClocks()
+		if ok {
+			m.setExtra("cpu.clock", avg)
+			m.setExtra("cpu.clock.max", max)
+			if physicalCPUCount() == 1 {
+				m.setExtra("cpu0.clock", avg)
+				m.setExtra("cpu0.clock.max", max)
+			}
 		}
 	}
 	if sensor == nil || physicalCPUCount() != 1 {

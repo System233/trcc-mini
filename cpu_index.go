@@ -9,27 +9,27 @@ import "strconv"
 func populateCPUIndexed(m *metrics) {
 	count := physicalCPUCount()
 	if count == 1 {
-		if m.TempValid && !m.Extras["cpu0.temperature"].Valid {
-			m.setExtra("cpu0.temperature", m.Temp)
-		}
-		m.setExtra("cpu0.load", float64(m.Load))
+		// Do not assign an arbitrary CCD temperature to package Tctl.
+		// The indexed OS sampler supplies cpu0.load only after a valid
+		// delta between two logical-processor counter snapshots.
 		if m.CPUPowerValid {
 			m.setExtra("cpu0.power", m.CPUPower)
 		}
 	}
 	if count > 0 {
-		// Preserve the OS-weighted overall CPU load even on multi-socket
-		// machines. Individual package loads require their own counters.
-		aggregateIndexedMetrics(m, map[string]int{"cpu": count})
-		// Preserve the existing explicit cpuTemperature selector for
-		// legacy cpu.temperature, while cpu0.temperature always means
-		// verified package Tctl and CCDs have their own metric names.
-		if m.TempValid {
-			delete(m.Extras, "cpu.temperature")
-		}
 		if count > 1 {
-			delete(m.Extras, "cpu.load")
+			// Current MSR/PawnIO sensor does not select the package on
+			// multi-socket machines; its reading has unknown provenance.
+			// Never present a random socket's watts or temperature as a
+			// comprehensive total.
+			m.TempValid = false
+			m.CPUPowerValid = false
 		}
+		// The OS-weighted total cpu.load remains available on all socket
+		// counts. Per-package load comes from actual per-thread deltas.
+		aggregateIndexedMetrics(m, map[string]int{"cpu": count})
+		// Unindexed temperature now reflects available physical package
+		// Tctl values (maximum), not the selected AMD CCD legacy source.
 	}
 }
 

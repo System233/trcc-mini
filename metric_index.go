@@ -189,7 +189,7 @@ func aggregateIndexedMetrics(m *metrics, deviceCount map[string]int) {
 			// Percentages of different sized memory pools are not additive.
 			// CPU load is provided by the OS as a properly weighted average;
 			// max/mean across uneven sockets would silently change semantics.
-			if (kind == "gpu" && suffix == "memory.load") || (kind == "cpu" && suffix == "load") {
+			if (kind == "gpu" && suffix == "memory.load") || (kind == "cpu" && (suffix == "load" || suffix == "clock")) {
 				continue
 			}
 			var a metricAcc
@@ -202,11 +202,10 @@ func aggregateIndexedMetrics(m *metrics, deviceCount map[string]int) {
 			}
 			mode := "sum"
 			if suffix == "temperature" || strings.HasPrefix(suffix, "temperature.") ||
-				suffix == "clock.max" || suffix == "load" || strings.HasPrefix(suffix, "load.") {
+				strings.HasPrefix(suffix, "clock.") || suffix == "load" ||
+				strings.HasPrefix(suffix, "load.") || strings.HasPrefix(suffix, "fan.") ||
+				strings.HasPrefix(suffix, "voltage") {
 				mode = "max"
-			}
-			if suffix == "clock" {
-				mode = "avg"
 			}
 			if v, valid := a.value(mode); valid {
 				m.setExtra(kind+"."+suffix, v)

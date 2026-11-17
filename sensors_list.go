@@ -30,10 +30,13 @@ func enumerateSensorReadings() (sensorListing, error) {
 	result := sensorListing{Devices: devices}
 	snapshot := metrics{}
 	var cpu cpuLoadSampler
-	_ = cpu.Sample() // first read primes cumulative CPU load counters
+	var cpuDetails cpuDetailSampler
+	_ = cpu.Sample()             // first read primes cumulative CPU load counters
+	cpuDetails.Sample(&snapshot) // first per-core sample primes counters
 	// Two immediate cumulative CPU reads usually report 0% by accident.
 	time.Sleep(250 * time.Millisecond)
 	snapshot.Load = cpu.Sample()
+	cpuDetails.Sample(&snapshot)
 	if sensor, e := openCPUSensor(); e == nil {
 		if value, e := sensor.ReadTemp("tctl"); e == nil {
 			snapshot.Temp, snapshot.TempValid = value, true
@@ -89,6 +92,14 @@ func enumerateSensorReadings() (sensorListing, error) {
 		}
 		for suffix := range catalog {
 			names[indexedMetricName(dev.Kind, dev.Index, suffix)] = true
+		}
+	}
+	for _, name := range listPlatformCPUDetailMetrics() {
+		names[name] = true
+	}
+	for name := range snapshot.Extras {
+		if metricNativeUnit(name) != "" {
+			names[name] = true
 		}
 	}
 	for key := range builtinUnits {

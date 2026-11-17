@@ -299,6 +299,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 		}()
 	}
 	var cpu cpuLoadSampler
+	var cpuDetails cpuDetailSampler
 	pawn, err := openCPUSensor()
 	defer func() {
 		if pawn != nil {
@@ -326,12 +327,22 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 	// A single frame cannot derive power from a cumulative energy counter:
 	// prime once, then allow a real interval before taking the render sample.
 	// This is read-only and affects only the explicit one-shot diagnostic.
-	if verb == "once" && pawn != nil && needCPUPower {
-		_, _, e := pawn.ReadPower()
-		if e != nil && opts.Verbose {
-			fmt.Fprintln(os.Stderr, "CPU watts:", e)
+	if verb == "once" {
+		// CPU package/core load and GPU/CPU energy counters require a
+		// real pair of samples. Prime both OS CPU samplers even when
+		// PawnIO is unavailable, then permit the deltas to accumulate.
+		_ = cpu.Sample()
+		var baseline metrics
+		cpuDetails.Sample(&baseline)
+		if pawn != nil && needCPUPower {
+			_, _, e := pawn.ReadPower()
+			if e != nil && opts.Verbose {
+				fmt.Fprintln(os.Stderr, "CPU watts:", e)
+			}
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			time.Sleep(250 * time.Millisecond)
 		}
-		time.Sleep(500 * time.Millisecond)
 	}
 	var reloader *configReloader
 	if verb == "run" {
@@ -419,6 +430,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 			}
 		}
 		m := metrics{Load: cpu.Sample()}
+		cpuDetails.Sample(&m)
 		if pawn != nil {
 			if t, e := pawn.ReadTemp(config.Sensors.CPUTemperature); e == nil {
 				m.Temp = t

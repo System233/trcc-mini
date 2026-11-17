@@ -178,13 +178,15 @@ trcc-mini sensors list
 trcc-mini sensors list --json
 ```
 
-Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、设备、功能号排序；NVIDIA NVML 通过真实 PCI 位置精确绑定，不再直接把 NVML 的 GPU0 等同于 `gpu0`。不包含 USB 虚拟显示器。若 PCI 无法可靠匹配，则宁可保持 N/A，也不把另一块 GPU 的值赋给该编号。例如本机识别为 `gpu0 = RTX 4070`、`gpu1 = AMD Radeon 核显`；请以**当前机器**的枚举结果为准。CPU 是物理封装编号，不是逻辑处理器编号；单插槽时可使用 `cpu0`，多插槽温度/功耗在当前寄存器采集器无法确定归属时保持每插槽 N/A，不能把全系统值冒充某个 CPU。
+Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、设备、功能号排序；NVIDIA NVML 通过真实 PCI 位置精确绑定，不再直接把 NVML 的 GPU0 等同于 `gpu0`。不包含 USB 虚拟显示器。若 PCI 无法可靠匹配，则宁可保持 N/A，也不把另一块 GPU 的值赋给该编号。例如本机识别为 `gpu0 = RTX 4070`、`gpu1 = AMD Radeon 核显`；请以**当前机器**的枚举结果为准。CPU 是物理封装编号，不是逻辑处理器编号。**Windows 已支持单处理器组内多个 CPU 封装的独立负载**：依照 Windows 的物理封装处理器位图，把逐逻辑处理器的空闲/内核/用户时间差归属到 `cpuN`，按时间增量加权计算封装负载。单封装与多封装均可直接使用 `cpuN.coreM.load`，这里的 `coreM` 明确是该封装内第 M 个**逻辑处理器**（包含 SMT 线程），不代表第 M 个物理核心。跨 Windows 多处理器组的复杂拓扑目前保持核心级 N/A，不推测归属；`cpu.load` 仍使用 Windows 的全系统负载。多封装温度/功耗在当前 MSR 采集器无法确定具体封装归属时保持 N/A，不能冒充另一个 CPU。
 
 | 指标示例 | 实际含义 / 单位 |
 | --- | --- |
 | `cpu0.temperature` / `cpu0.ccd0.temperature` | CPU 封装控制温度 / CCD0 温度，°C；仅有真实读数才有效 |
 | `cpu0.temperature.max` | 当前能读取的封装/CCD 温度最高值，°C |
 | `cpu0.power` / `cpu0.load` | CPU 封装功耗 W / 单插槽 CPU 负载 % |
+| `cpu0.core0.load` / `cpu0.core1.load` | CPU0 内逻辑处理器 0 / 1 的独立使用率，%；至少两次真实计数器采样才有效 |
+| `cpu0.core0.clock` / `cpu0.core1.clock` | CPU0 内逻辑处理器 0 / 1 当前 OS 时钟估计值，MHz |
 | `cpu0.clock` / `cpu.clock.max` | 系统报告的平均/最高当前处理器时钟，MHz；Windows 的 Power API 值不是逐周期测得的有效频率 |
 | `gpu0.temperature` / `gpu0.load` | 指定 GPU 温度 °C / 使用率 % |
 | `gpu0.power` / `gpu0.power.limit` | GPU 当前功率 W / 驱动设置的功率上限 W，**两者不是同一指标** |
@@ -198,7 +200,7 @@ Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、�
 | `gpu0.fan.load` / `gpu0.pcie.tx` / `gpu0.pcie.rx` | 风扇百分比 / PCIe MB/s |
 | `gpu0.temperature.hotspot` / `gpu0.temperature.memory` | 驱动支持时的热点/显存温度；否则 N/A |
 
-所有可配置的设备指标名称可通过 `sensors list` 查看。即使配置使用了该名称，也不表示当前型号/驱动一定支持该传感器。无索引综合指标遵循：功率和容量求和、温度和 GPU 负载取最高值、CPU 总负载使用系统提供的加权值、显存占用百分比使用同一组有完整已用/总量读数的设备加总后计算。**N/A 不参与聚合，只有全部无有效数据时才显示 N/A**。此规则不代表缺失数据的设备功率为真实的 0W。Windows 的 AMD ADL2 能提供温度、图形负载、时钟、电压及多种功率域；Intel IGCL 可选读取 GPU 温度、频率、电压、活动/能耗计数器；当只有 CPU/SoC 可能重叠的功率读数时，`gpuN.power` 仍为 N/A，不污染 `gpu.power`。Intel IGCL 实机兼容性和各种设备功率域仍需要在有 Intel GPU 的 Windows 主机上验收。
+所有可配置的设备指标名称可通过 `sensors list` 查看。**它会枚举实际发现的逻辑处理器指标，即使采集时暂时是 N/A 也保留名称。**即使配置使用了该名称，也不表示当前型号/驱动一定支持该传感器。无索引综合指标遵循：功率和容量求和、温度和 GPU 负载取最高值、CPU 总负载使用系统提供的加权值、显存占用百分比使用同一组有完整已用/总量读数的设备加总后计算。跨 GPU 的频率、风扇转速和电压不求和，而取可用的最大值；CPU 总频率按有效逻辑处理器加权。**N/A 不参与聚合，只有全部无有效数据时才显示 N/A**。此规则不代表缺失数据的设备功率为真实的 0W。Windows 的 AMD ADL2 能提供温度、图形负载、时钟、电压及多种功率域；Intel IGCL 可选读取 GPU 温度、频率、电压、活动/能耗计数器；当只有 CPU/SoC 可能重叠的功率读数时，`gpuN.power` 仍为 N/A，不污染 `gpu.power`。Intel IGCL 实机兼容性和各种设备功率域仍需要在有 Intel GPU 的 Windows 主机上验收。
 
 使用示例：将任意现有 `display.slots.gpu.primary.metrics` 设置为 `["gpu0.power", "gpu0.temperature"]`（并设置 `interval`），即可在同一三位数区域轮换**指定显卡**的实际功耗与温度。其他指标级符号、颜色配置照旧。三位数不能容纳 4300MHz 等四位频率时，该值不会被错误截断，现有显示选择器将跳过。
 
@@ -318,8 +320,7 @@ macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/st
 
 `config init/show/check/path`、`sensors` 不操作 USB；`detect` 只枚举 USB；`once` 或 `run -n` 完全不写入 USB，适合先验证 JSON 和渲染。
 
-`once` 在任一区域需要 CPU 功耗时先读取一次能耗计数器作为基线（如 Windows AMD/Intel MSR 或 Linux RAPL），
-再间隔 500ms 采集下一次值；单帧预览显示每个区域的**第一个有效指标**。
+`once` 会先对 CPU 总负载及逐逻辑处理器负载采样一次作为基线，再间隔至少 250ms 读取真正的差值；任一区域需要 CPU 功耗时也会先读取能耗计数器作为基线（如 Windows AMD/Intel MSR 或 Linux RAPL），此时等待 500ms。单帧预览显示每个区域的**第一个有效指标**。
 普通 `run` 不增加该等待，
 第一次 CPU 功耗采样属于预热，可能为 `N/A`；
 后续周期才会得到实际瓦数。没有有效传感器数据时一律输出

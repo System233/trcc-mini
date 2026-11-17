@@ -5,13 +5,23 @@ package main
 
 import (
 	"encoding/binary"
+	"sync"
 	"syscall"
 	"unsafe"
 )
 
 var procCPUInformationEx = syscall.NewLazyDLL("kernel32.dll").NewProc("GetLogicalProcessorInformationEx")
+var windowsCPUPackagesCache struct {
+	sync.Once
+	count int
+}
 
 func physicalCPUCount() int {
+	windowsCPUPackagesCache.Do(func() { windowsCPUPackagesCache.count = queryPhysicalCPUCount() })
+	return windowsCPUPackagesCache.count
+}
+
+func queryPhysicalCPUCount() int {
 	const relationProcessorPackage = 3
 	var needed uint32
 	_, _, _ = procCPUInformationEx.Call(relationProcessorPackage, 0, uintptr(unsafe.Pointer(&needed)))

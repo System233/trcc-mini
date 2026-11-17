@@ -64,6 +64,10 @@ func TestAggregateIndexedMetricsIgnoresNA(t *testing.T) {
 	m.setExtra("gpu1.temperature", 67)
 	m.setExtra("gpu0.power", 45)
 	m.setExtra("gpu1.load", 90)
+	m.setExtra("gpu0.clock.core", 210)
+	m.setExtra("gpu1.clock.core", 600)
+	m.setExtra("gpu0.voltage", 0.91)
+	m.setExtra("gpu1.voltage", 1.08)
 	m.setExtra("gpu0.load", 10)
 	m.setExtra("gpu0.memory.used", 2)
 	m.setExtra("gpu0.memory.total", 8)
@@ -77,6 +81,8 @@ func TestAggregateIndexedMetricsIgnoresNA(t *testing.T) {
 		"gpu.temperature":  67,
 		"gpu.power":        45,
 		"gpu.load":         90,
+		"gpu.clock.core":   600,
+		"gpu.voltage":      1.08,
 		"gpu.memory.used":  5,
 		"gpu.memory.total": 20,
 		"gpu.memory.load":  25,
@@ -113,6 +119,30 @@ func TestIndexedDerivedPowerSumAndOverlap(t *testing.T) {
 	applyDerived(&m, valid)
 	if _, ok := readMetric(m, "gpu.total.estimated"); ok {
 		t.Fatal("all unavailable sources must produce N/A")
+	}
+}
+
+func TestIndexedCPUSensorProvenanceAndGlobalLoad(t *testing.T) {
+	if physicalCPUCount() != 1 {
+		t.Skip("test checks single-socket legacy sensor provenance")
+	}
+	m := metrics{Temp: 95, TempValid: true, Load: 37}
+	// The user requested a specific CCD as the legacy temperature, but
+	// a direct package Tctl sensor reads 62C. cpu0.temperature cannot
+	// borrow the unrelated 95C CCD value.
+	m.setExtra("cpu0.temperature", 62)
+	m.setExtra("cpu0.load", 21)
+	populateCPUIndexed(&m)
+	for name, want := range map[string]float64{
+		"cpu0.temperature": 62,
+		"cpu.temperature":  62,
+		"cpu0.load":        21,
+		"cpu.load":         37,
+	} {
+		v, ok := readMetric(m, name)
+		if !ok || v != want {
+			t.Errorf("%s = %.1f valid=%v, want %.1f", name, v, ok, want)
+		}
 	}
 }
 
