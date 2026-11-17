@@ -146,6 +146,26 @@ func TestIndexedCPUSensorProvenanceAndGlobalLoad(t *testing.T) {
 	}
 }
 
+func TestExactPackagePowerNotOverwrittenByLegacyProbe(t *testing.T) {
+	if physicalCPUCount() != 1 {
+		t.Skip("single-socket legacy fallback behavior")
+	}
+	m := metrics{CPUPower: 49, CPUPowerValid: true}
+	m.setExtra("cpu0.power", 84) // explicitly package-bound source
+	populateCPUIndexed(&m)
+	if value, ok := readMetric(m, "cpu0.power"); !ok || value != 84 {
+		t.Fatalf("legacy CPU power overwrote package-bound source: %.2f valid=%v", value, ok)
+	}
+	if value, ok := readMetric(m, "cpu.power"); !ok || value != 84 {
+		t.Fatalf("aggregate power did not select package-bound source: %.2f valid=%v", value, ok)
+	}
+	m = metrics{CPUPower: 49, CPUPowerValid: true}
+	populateCPUIndexed(&m)
+	if value, ok := readMetric(m, "cpu0.power"); !ok || value != 49 {
+		t.Fatalf("legacy single-socket fallback no longer works: %.2f valid=%v", value, ok)
+	}
+}
+
 func TestAggregateMemoryLoadUsesPairedValues(t *testing.T) {
 	var m metrics
 	m.setExtra("gpu0.memory.used", 2)

@@ -152,10 +152,12 @@ type cpuPowerProbe struct {
 type linuxCPUSensor struct {
 	tempSensors []hwmonChip
 	power       cpuPowerProbe
+	packages    *linuxPackageTelemetryIndex
 }
 
 func openCPUSensor() (cpuTelemetry, error) {
 	p := &linuxCPUSensor{}
+	p.packages = discoverLinuxPackageTelemetry("/sys/class", linuxProcessorPackages())
 	for _, chip := range scanHWMon() {
 		if chip.name == "k10temp" || chip.name == "coretemp" {
 			p.tempSensors = append(p.tempSensors, chip)
@@ -196,6 +198,16 @@ func openCPUSensor() (cpuTelemetry, error) {
 		}
 	}
 	if len(p.tempSensors) == 0 && p.power.energy == "" && p.power.hwmon == "" {
+		hasIndexed := false
+		for _, entry := range p.packages.devices {
+			if entry.tempPath != "" || entry.power.energy != "" {
+				hasIndexed = true
+				break
+			}
+		}
+		if hasIndexed {
+			return p, nil
+		}
 		return nil, errors.New("Linux CPU hwmon (k10temp/coretemp) and RAPL unavailable; temperature/power N/A")
 	}
 	return p, nil

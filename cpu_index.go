@@ -13,7 +13,9 @@ func populateCPUIndexed(m *metrics) {
 		// The indexed OS sampler supplies cpu0.load only after a valid
 		// delta between two logical-processor counter snapshots.
 		if m.CPUPowerValid {
-			m.setExtra("cpu0.power", m.CPUPower)
+			if value, alreadyValid := m.Extras["cpu0.power"]; !alreadyValid || !value.Valid {
+				m.setExtra("cpu0.power", m.CPUPower)
+			}
 		}
 	}
 	if count > 0 {

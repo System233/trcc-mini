@@ -20,8 +20,12 @@ func discoverHardware() ([]hardwareDevice, error) {
 	}
 	vendor := windowsCPUVendor()
 	found := make([]hardwareDevice, 0, cpus+len(gpu))
+	provider := "OS load / PawnIO (optional, package identity verified for single socket)"
+	if cpus > 1 {
+		provider = "OS load / MSR temperature and watts unbound (N/A)"
+	}
 	for i := 0; i < cpus; i++ {
-		found = append(found, hardwareDevice{Kind: "cpu", Index: i, Name: name, Vendor: vendor, Driver: "native/PawnIO"})
+		found = append(found, hardwareDevice{Kind: "cpu", Index: i, Name: name, Vendor: vendor, Driver: provider})
 	}
 	for _, d := range gpu {
 		found = append(found, d)

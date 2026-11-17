@@ -10,6 +10,9 @@ import (
 )
 
 func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
+	if native, ok := sensor.(*linuxCPUSensor); ok && native.packages != nil {
+		native.packages.Sample(m)
+	}
 	if data, e := os.ReadFile("/proc/cpuinfo"); e == nil {
 		var sum, max float64
 		n := 0
