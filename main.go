@@ -291,6 +291,16 @@ func run() error {
 	} else if style == 2 {
 		fmt.Fprintln(os.Stderr, "NOTE: PA120 GPU row disabled in config (sensors.gpu=false)")
 	}
+	// A single frame cannot derive power from a cumulative energy counter:
+	// prime once, then allow a real interval before taking the render sample.
+	// This is read-only and affects only the explicit one-shot diagnostic.
+	if verb == "once" && pawn != nil && config.Display.Power != "off" {
+		_, _, e := pawn.ReadPower()
+		if e != nil && opts.Verbose {
+			fmt.Fprintln(os.Stderr, "CPU watts:", e)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	var previous []byte
 	start := time.Now()
 	nextPhase := -1
@@ -344,7 +354,7 @@ func run() error {
 		default:
 			phase = 0
 		}
-		showPower := config.Display.Power == "replace" || (config.Display.Power == "rotate" && int(time.Since(start)/powerPeriod)%2 == 1)
+		showPower := powerFrameVisible(config.Display.Power, time.Since(start), powerPeriod, verb == "once")
 		cpuWatts := showPower && m.CPUPowerValid
 		gpuWatts := showPower && m.GPUPowerValid
 		if style == 3 || style == 5 || style == 6 {
@@ -376,7 +386,7 @@ func run() error {
 		if changed || time.Since(start) < period || phase != nextPhase {
 			if opts.DryRun {
 				if opts.Verbose {
-					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU %d%%/%s/%.1fW(%t), GPU %s/%s/%.1fW(%t), wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), m.CPUPower, m.CPUPowerValid, m.GPULoadString(), m.GPUTempString(), m.GPUPower, m.GPUPowerValid, cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
+					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU load=%d%% temp=%s watts=%s, GPU load=%s temp=%s watts=%s, wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), wattStatus(m.CPUPower, m.CPUPowerValid), m.GPULoadString(), m.GPUTempString(), wattStatus(m.GPUPower, m.GPUPowerValid), cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
 				}
 			} else {
 				if d == nil {
@@ -421,6 +431,18 @@ func run() error {
 		case <-ticker.C:
 		}
 	}
+}
+func powerFrameVisible(mode string, elapsed, interval time.Duration, oneShot bool) bool {
+	if mode == "replace" {
+		return true
+	}
+	return mode == "rotate" && (oneShot || (interval > 0 && int(elapsed/interval)%2 == 1))
+}
+func wattStatus(value float64, valid bool) string {
+	if !valid {
+		return "N/A"
+	}
+	return fmt.Sprintf("%.1fW", value)
 }
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {

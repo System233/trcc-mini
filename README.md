@@ -100,6 +100,13 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 `config init/show/check/path`、`sensors` 不操作 USB；`detect` 只枚举 USB；`once` 或 `run -n` 完全不写入 USB，适合先验证 JSON 和渲染。
 
+`once` 在需要显示功耗时先读取一次 AMD 能量计数器作为基线，
+再间隔 500ms 采集下一次值；当配置为 `rotate` 时，
+单帧预览默认展示功耗阶段。普通 `run` 不增加该等待，
+第一次 CPU 功耗采样属于预热，可能为 `N/A`；
+后续周期才会得到实际瓦数。没有有效传感器数据时一律输出
+`N/A`，而不是把无效数值报告成真实的 `0W`。
+
 测试覆盖配置、严格 JSON 校验、CLI 参数拼写、PA120 四区域配色、GPU 功耗、CPU 能耗计数器、段码及 HID 报文构造。真实设备写入、PawnIO 下的 CCD 传感器值仍需要管理员环境实测。
 
 ## 构建与许可

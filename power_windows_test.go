@@ -27,6 +27,38 @@ func TestEnergyPower(t *testing.T) {
 		t.Fatal("must reject invalid units")
 	}
 }
+
+func TestPowerFrameVisible(t *testing.T) {
+	period := 4 * time.Second
+	for _, tc := range []struct {
+		mode       string
+		elapsed    time.Duration
+		once, want bool
+	}{
+		{"off", 6 * time.Second, false, false},
+		{"off", 0, true, false},
+		{"replace", 0, false, true},
+		{"replace", 0, true, true},
+		{"rotate", 0, false, false},
+		{"rotate", 5 * time.Second, false, true},
+		{"rotate", 9 * time.Second, false, false},
+		{"rotate", 0, true, true},
+	} {
+		got := powerFrameVisible(tc.mode, tc.elapsed, period, tc.once)
+		if got != tc.want {
+			t.Errorf("mode=%s elapsed=%s once=%v: got %v want %v", tc.mode, tc.elapsed, tc.once, got, tc.want)
+		}
+	}
+}
+
+func TestWattStatus(t *testing.T) {
+	if got := wattStatus(0, false); got != "N/A" {
+		t.Fatalf("invalid zero must not be called real 0W: %q", got)
+	}
+	if got := wattStatus(29.9, true); got != "29.9W" {
+		t.Fatalf("valid GPU power: %q", got)
+	}
+}
 func TestPA120WattModes(t *testing.T) {
 	m := metrics{Temp: 58, TempValid: true, Load: 67, CPUPower: 185, CPUPowerValid: true,
 		GPUTemp: 49, GPUTempValid: true, GPULoad: 34, GPULoadValid: true, GPUPower: 133, GPUPowerValid: true}
