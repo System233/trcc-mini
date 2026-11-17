@@ -17,8 +17,9 @@ type colorRule struct {
 	Stops []colorStop `json:"stops,omitempty"`
 }
 type indicatorConfig struct {
-	Unit    string     `json:"unit,omitempty"` // C/F/percent/W/GiB/MiB
-	Symbols []string   `json:"symbols"`        // hardware CPU,GPU,C,F,% glyphs; [] disables all
+	Unit    string     `json:"unit,omitempty"`  // C/F/percent/W/GiB/MiB
+	Scale   *float64   `json:"scale,omitempty"` // display-only multiplier; e.g. 0.1 maps 4300MHz to 430 digits
+	Symbols []string   `json:"symbols"`         // hardware CPU,GPU,C,F,% glyphs; [] disables all
 	Color   *colorRule `json:"color,omitempty"`
 }
 
@@ -95,6 +96,12 @@ func validateSlotIndicators(slots map[string]slotConfig, indicators map[string]i
 	for name, setting := range indicators {
 		if !supportedMetric(name, derived) {
 			return fmt.Errorf("indicators.%s is not a defined metric", name)
+		}
+		if setting.Scale != nil {
+			factor := *setting.Scale
+			if factor < 1e-9 || factor > 1e6 || math.IsNaN(factor) || math.IsInf(factor, 0) {
+				return fmt.Errorf("indicators.%s.scale must be finite and in [1e-9, 1000000]", name)
+			}
 		}
 		unit := unitForMetric(name, indicators, derived)
 		native := metricNativeUnit(name)
@@ -193,11 +200,25 @@ func displayValue(name string, value float64, indicators map[string]indicatorCon
 	unit := unitForMetric(name, indicators, derived)
 	switch {
 	case native == "C" && unit == "F":
-		return value*9/5 + 32
+		value = value*9/5 + 32
 	case native == "GiB" && unit == "MiB":
-		return value * 1024
+		value = value * 1024
+	}
+	if factor := indicators[name].Scale; factor != nil {
+		value *= *factor
 	}
 	return value
+}
+
+// A scaled display digit is not the original SI unit: 430 with scale
+// 0.1 means 430 x 10MHz = 4300MHz. Keep diagnostics explicit while
+// physical LEDs still only render the symbols supported by the cooler.
+func displayUnitLabel(name string, indicators map[string]indicatorConfig) string {
+	unit := unitForMetric(name, indicators, nil)
+	if factor := indicators[name].Scale; factor != nil && *factor != 1 {
+		return fmt.Sprintf("×%g%s", 1/(*factor), unit)
+	}
+	return unit
 }
 
 func metricSymbols(name string, slot string, indicators map[string]indicatorConfig, derived map[string]derivedConfig) []string {

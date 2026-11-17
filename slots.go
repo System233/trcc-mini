@@ -176,7 +176,7 @@ func selectableMetric(m metrics, metric string, primary bool, options ...map[str
 	if rounded < 0 || rounded > limit {
 		return slotSelection{}, false
 	}
-	return slotSelection{Metric: metric, Value: v, Valid: true, Unit: unitForMetric(metric, indicators, nil)}, true
+	return slotSelection{Metric: metric, Value: v, Valid: true, Unit: displayUnitLabel(metric, indicators)}, true
 }
 
 // Missing or unrepresentable values are skipped. No zero-value fabrication.

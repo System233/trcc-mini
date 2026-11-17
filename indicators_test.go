@@ -90,6 +90,39 @@ func TestMetricDisplayUnitsAndSymbols(t *testing.T) {
 		t.Fatal("explicit empty symbols must switch off both temperature LEDs")
 	}
 }
+
+func TestIndexedClockDisplayScalePreservesSensorUnits(t *testing.T) {
+	factor := 0.1 // 4300 MHz -> 430 segments, each digit unit = 10 MHz.
+	indicator := map[string]indicatorConfig{
+		"cpu0.core0.clock": {Scale: &factor, Symbols: []string{"CPU"}},
+	}
+	slots := defaultDisplaySlots()
+	slots[cpuPrimary] = slotConfig{Metrics: []string{"cpu0.core0.clock"}}
+	if err := validateSlotIndicators(slots, indicator, nil); err != nil {
+		t.Fatal(err)
+	}
+	var m metrics
+	m.setExtra("cpu0.core0.clock", 4300)
+	if raw, ok := readMetric(m, "cpu0.core0.clock"); !ok || raw != 4300 {
+		t.Fatalf("display scale must not mutate raw clock: %f valid=%v", raw, ok)
+	}
+	if unscaled := selectSlot(slots[cpuPrimary], m, cpuPrimary, 0); unscaled.Valid {
+		t.Fatalf("4-digit MHz must remain unrepresentable without display scale: %+v", unscaled)
+	}
+	selected := selectSlot(slots[cpuPrimary], m, cpuPrimary, 0, indicator)
+	if !selected.Valid || selected.Value != 430 || selected.Unit != "×10MHz" {
+		t.Fatalf("scaled 3-digit clock selection invalid: %+v", selected)
+	}
+	if got := len(renderPA120Slots(map[string]slotSelection{cpuPrimary: selected})); got != 84 {
+		t.Fatalf("scaled value changed display layout: %d", got)
+	}
+	for _, bad := range []float64{0, -1, 1e-12, math.NaN(), math.Inf(1), 1e7} {
+		indicator["cpu0.core0.clock"] = indicatorConfig{Scale: &bad}
+		if err := validateSlotIndicators(slots, indicator, nil); err == nil {
+			t.Errorf("invalid display scale %v accepted", bad)
+		}
+	}
+}
 func TestInvalidSymbolAssignments(t *testing.T) {
 	cases := []struct {
 		slot, metric string
