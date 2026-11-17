@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func TestPA120PresetAndPowerColors(t *testing.T) {
 	c := defaultAppConfig()
 	m := metrics{Temp: 55, TempValid: true, Load: 42, CPUPower: 135, CPUPowerValid: true,
 		GPUTemp: 44, GPUTempValid: true, GPULoad: 30, GPULoadValid: true, GPUPower: 94, GPUPowerValid: true}
-	col := buildPA120Colors(c.Theme, m, false, false)
+	col := buildPA120Colors(c.Theme, m, resolveDisplaySlots(c.Display.Slots, m, 0))
 	cyan := parseRGB("#36C9E8")
 	purple := parseRGB("#A78BFA")
 	for _, i := range []int{0, 1, 4, 5, 10, 16, 23, 30, 31, 37, 44, 80, 81, 6} {
@@ -22,14 +23,15 @@ func TestPA120PresetAndPowerColors(t *testing.T) {
 			t.Fatalf("gpu LED %d color %+v want %+v", i, col[i], purple)
 		}
 	}
-	power := buildPA120Colors(c.Theme, m, true, true)
+	selected := resolveDisplaySlots(c.Display.Slots, m, 5*time.Second)
+	power := buildPA120Colors(c.Theme, m, selected)
 	if power[10] != parseRGB("#FFB000") || power[45] != parseRGB("#FF9200") {
 		t.Fatalf("incorrect CPU/GPU watt colors: %v %v", power[10], power[45])
 	}
 	if power[31] != cyan || power[66] != purple || power[0] != cyan || power[2] != purple {
 		t.Fatal("watts accidentally changed labels or load digits")
 	}
-	mask, _ := renderWithPower(2, m, 0, true, true)
+	mask := renderPA120Slots(selected)
 	frame := makeFrameColors(2, 0, mask, power, 75)
 	if len(frame) != 272 {
 		t.Fatalf("physical frame size %d", len(frame))
@@ -74,26 +76,30 @@ func TestThemePresetSwitchAndZoneOverrides(t *testing.T) {
 	c := defaultAppConfig()
 	m := metrics{Temp: 85, TempValid: true, Load: 60, GPUTemp: 55, GPUTempValid: true, GPULoad: 34, GPULoadValid: true}
 	c.Theme.Preset = "thermal"
-	col := buildPA120Colors(c.Theme, m, false, false)
+	col := buildPA120Colors(c.Theme, m, resolveDisplaySlots(c.Display.Slots, m, 0))
 	if col[10] != gradientColor(85) || col[31] != gradientColor(60) ||
 		col[45] != gradientColor(55) || col[66] != gradientColor(34) {
 		t.Fatalf("thermal gradients not linked to their own sensors")
 	}
 	c.Theme.Preset = "night"
-	night := buildPA120Colors(c.Theme, m, false, false)
+	night := buildPA120Colors(c.Theme, m, resolveDisplaySlots(c.Display.Slots, m, 0))
 	if night[10] != parseRGB("#3B7183") || night[45] != parseRGB("#67548E") {
 		t.Fatal("night preset not effective")
 	}
 	c.Theme.Zones["gpu.temp"] = zoneConfig{Mode: "solid", Color: "#FF0000", PowerColor: "#00FF00"}
-	custom := buildPA120Colors(c.Theme, m, true, true)
+	m.CPUPower = 90
+	m.CPUPowerValid = true
+	m.GPUPower = 88
+	m.GPUPowerValid = true
+	custom := buildPA120Colors(c.Theme, m, resolveDisplaySlots(c.Display.Slots, m, 5*time.Second))
 	if custom[45] != parseRGB("#00FF00") || custom[7] != parseRGB("#FF0000") {
 		t.Fatal("custom GPU temperature zone overrides not applied")
 	}
 }
 
-func TestFrameMappedMatchesSolidLegacy(t *testing.T) {
+func TestPA120WireEncodingConsistency(t *testing.T) {
 	m := metrics{Temp: 45, TempValid: true, Load: 23, GPUTemp: 51, GPUTempValid: true, GPULoad: 55, GPULoadValid: true}
-	mask, _ := render(2, m, 0)
+	mask := renderPA120Slots(resolveDisplaySlots(defaultDisplaySlots(), m, 0))
 	white := rgb{255, 255, 255}
 	colors := make([]rgb, 84)
 	for i := range colors {

@@ -22,10 +22,8 @@ func TestKnownModels(t *testing.T) {
 	}
 }
 func TestFrameProtocol(t *testing.T) {
-	out, err := render(2, metrics{Load: 42, Temp: 53, TempValid: true}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	m := metrics{Load: 42, Temp: 53, TempValid: true}
+	out := renderPA120Slots(resolveDisplaySlots(defaultDisplaySlots(), m, 0))
 	if len(out) != 84 {
 		t.Fatal("PA120 mask length", len(out))
 	}
@@ -61,7 +59,7 @@ func TestAX120Masks(t *testing.T) {
 	}
 }
 func TestDigitalStyles(t *testing.T) {
-	for _, s := range []int{1, 2, 3, 5, 6, 7, 8, 13} {
+	for _, s := range []int{1, 3, 5, 6, 7, 8, 13} {
 		mask, err := render(s, metrics{Temp: 62, TempValid: true, Load: 85}, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -75,7 +73,7 @@ func TestDigitalStyles(t *testing.T) {
 
 func TestGPUZones(t *testing.T) {
 	m := metrics{Temp: 52, TempValid: true, Load: 44, GPUTemp: 49, GPUTempValid: true, GPULoad: 37, GPULoadValid: true}
-	pa, _ := render(2, m, 0)
+	pa := renderPA120Slots(resolveDisplaySlots(defaultDisplaySlots(), m, 0))
 	if !(pa[2] && pa[3] && pa[7] && pa[9]) {
 		t.Fatal("PA120 GPU indicators missing")
 	}
@@ -87,7 +85,7 @@ func TestGPUZones(t *testing.T) {
 	if !(ax[4] && ax[5] && ax[8] && !ax[6]) {
 		t.Fatal("AX120 GPU load indicator incorrect")
 	}
-	missing, _ := render(2, metrics{Load: 44}, 0)
+	missing := renderPA120Slots(resolveDisplaySlots(defaultDisplaySlots(), metrics{Load: 44}, 0))
 	if missing[2] || missing[3] || missing[7] || missing[9] {
 		t.Fatal("fake GPU values illuminated")
 	}

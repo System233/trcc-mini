@@ -168,7 +168,6 @@ func run() error {
 	}
 	period, _ := time.ParseDuration(config.Display.Interval)
 	phasePeriod, _ := time.ParseDuration(config.Display.PhaseInterval)
-	powerPeriod, _ := time.ParseDuration(config.Display.PowerInterval)
 	baseColor, err := parseColor(config.Theme.Color)
 	if err != nil {
 		return err
@@ -255,9 +254,7 @@ func run() error {
 	if !supportsStyle(style) {
 		return fmt.Errorf("style %d has a different use (clock/disk/memory) or is not yet supported by this CPU display CLI", style)
 	}
-	if config.Display.Power != "off" && style != 2 && style != 3 && style != 5 && style != 6 {
-		return errors.New("watt display is implemented for PA120, AK120, LF8 and LF12; first identify actual device PM")
-	}
+	needCPUPower, needGPUPower := powerSensorsRequired(config.Display.Slots, style)
 	if verb == "once" {
 		opts.Verbose = true
 	}
@@ -294,7 +291,7 @@ func run() error {
 	// A single frame cannot derive power from a cumulative energy counter:
 	// prime once, then allow a real interval before taking the render sample.
 	// This is read-only and affects only the explicit one-shot diagnostic.
-	if verb == "once" && pawn != nil && config.Display.Power != "off" {
+	if verb == "once" && pawn != nil && needCPUPower {
 		_, _, e := pawn.ReadPower()
 		if e != nil && opts.Verbose {
 			fmt.Fprintln(os.Stderr, "CPU watts:", e)
@@ -318,7 +315,7 @@ func run() error {
 			} else if opts.Verbose {
 				fmt.Fprintln(os.Stderr, "CPU temperature:", e)
 			}
-			if config.Display.Power != "off" {
+			if needCPUPower {
 				watts, ok, e := pawn.ReadPower()
 				if e == nil {
 					m.CPUPower = watts
@@ -330,7 +327,7 @@ func run() error {
 		}
 		if gpu != nil {
 			m.GPUTemp, m.GPUTempValid, m.GPULoad, m.GPULoadValid = gpu.Read()
-			if config.Display.Power != "off" {
+			if needGPUPower {
 				m.GPUPower, m.GPUPowerValid = gpu.ReadPower()
 			}
 		}
@@ -354,16 +351,16 @@ func run() error {
 		default:
 			phase = 0
 		}
-		showPower := powerFrameVisible(config.Display.Power, time.Since(start), powerPeriod, verb == "once")
-		cpuWatts := showPower && m.CPUPowerValid
-		gpuWatts := showPower && m.GPUPowerValid
-		if style == 3 || style == 5 || style == 6 {
-			cpuWatts = m.CPUPowerValid
-			gpuWatts = m.GPUPowerValid
-		}
-		mask, e := renderWithPower(style, m, phase, cpuWatts, gpuWatts)
-		if e != nil {
-			return e
+		var selected map[string]slotSelection
+		var mask []bool
+		if style == 2 {
+			selected = resolveDisplaySlots(config.Display.Slots, m, time.Since(start))
+			mask = renderPA120Slots(selected)
+		} else {
+			mask, err = renderWithPower(style, m, phase, m.CPUPowerValid, m.GPUPowerValid)
+			if err != nil {
+				return err
+			}
 		}
 		color := baseColor
 		if config.Theme.Link == "load" {
@@ -378,15 +375,25 @@ func run() error {
 		if config.Theme.Link == "gpu-load" && m.GPULoadValid {
 			color = thresholdColor(float64(m.GPULoad))
 		}
-		packet := makeFramePower(style, sub, mask, color, config.Display.Brightness, cpuWatts, gpuWatts, powerColor)
-		if style == 2 && config.Theme.Link == "static" {
-			packet = makeFrameColors(style, sub, mask, buildPA120Colors(config.Theme, m, cpuWatts, gpuWatts), config.Display.Brightness)
+		var packet []byte
+		if style == 2 {
+			colors := buildPA120Colors(config.Theme, m, selected)
+			if config.Theme.Link != "static" {
+				colors = globalPA120Colors(config.Theme, selected, color)
+			}
+			packet = makeFrameColors(style, sub, mask, colors, config.Display.Brightness)
+		} else {
+			packet = makeFramePower(style, sub, mask, color, config.Display.Brightness, m.CPUPowerValid, m.GPUPowerValid, powerColor)
 		}
 		changed := !bytesEqual(previous, packet)
+		var e error
 		if changed || time.Since(start) < period || phase != nextPhase {
 			if opts.DryRun {
 				if opts.Verbose {
-					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU load=%d%% temp=%s watts=%s, GPU load=%s temp=%s watts=%s, wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), wattStatus(m.CPUPower, m.CPUPowerValid), m.GPULoadString(), m.GPUTempString(), wattStatus(m.GPUPower, m.GPUPowerValid), cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
+					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU load=%d%% temp=%s watts=%s, GPU load=%s temp=%s watts=%s, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), wattStatus(m.CPUPower, m.CPUPowerValid), m.GPULoadString(), m.GPUTempString(), wattStatus(m.GPUPower, m.GPUPowerValid), phase, packet[:minInt(len(packet), 22)])
+					if style == 2 {
+						fmt.Println(slotSummary(selected))
+					}
 				}
 			} else {
 				if d == nil {
@@ -412,6 +419,9 @@ func run() error {
 				} else {
 					if opts.Verbose {
 						fmt.Printf("CPU load=%d%% temp=%s; GPU load=%s temp=%s; phase=%d LEDs=%d\n", m.Load, m.TempString(), m.GPULoadString(), m.GPUTempString(), phase, activeCount(mask))
+						if style == 2 {
+							fmt.Println(slotSummary(selected))
+						}
 					}
 					previous = packet
 				}
@@ -431,12 +441,6 @@ func run() error {
 		case <-ticker.C:
 		}
 	}
-}
-func powerFrameVisible(mode string, elapsed, interval time.Duration, oneShot bool) bool {
-	if mode == "replace" {
-		return true
-	}
-	return mode == "rotate" && (oneShot || (interval > 0 && int(elapsed/interval)%2 == 1))
 }
 func wattStatus(value float64, valid bool) string {
 	if !valid {

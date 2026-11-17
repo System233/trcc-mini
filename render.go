@@ -177,32 +177,6 @@ func renderWithPower(style int, m metrics, phase int, cpuPower, gpuPower bool) (
 				encodeNum(out, m.GPULoad, 3, 9)
 			}
 		}
-	case 2: // PA120: four simultaneous zones (CPU temp, CPU %, GPU temp, GPU %)
-		out = make([]bool, 84)
-		mark(out, 0)
-		mark(out, 1)
-		mark(out, 6)
-		if cpuPower && m.CPUPowerValid {
-			encodeNum(out, int(math.Round(m.CPUPower)), 3, 10)
-		} else if m.TempValid {
-			mark(out, 4)
-			encodeNum(out, int(m.Temp), 3, 10)
-		}
-		encodePartial(out, m.Load, 31, 80, 81)
-		if gpuPower && m.GPUPowerValid {
-			mark(out, 2)
-			mark(out, 3)
-			encodeNum(out, int(math.Round(m.GPUPower)), 3, 45)
-		} else if m.GPUTempValid {
-			mark(out, 2)
-			mark(out, 3)
-			mark(out, 7)
-			encodeNum(out, int(m.GPUTemp), 3, 45)
-		}
-		if m.GPULoadValid {
-			mark(out, 9)
-			encodePartial(out, m.GPULoad, 66, 82, 83)
-		}
 	case 3: // AK120: 3 digit power, temp, 2 digit load, CPU/GPU rotation.
 		out = make([]bool, 64)
 		mark(out, 4)
@@ -415,13 +389,6 @@ func makeFramePower(style, sub int, mask []bool, color rgb, brightness int, cpuP
 		if logical >= 0 && logical < len(mask) && mask[logical] {
 			c := color
 			switch style {
-			case 2:
-				if cpuPower && logical >= 10 && logical <= 30 {
-					c = powerColor
-				}
-				if gpuPower && logical >= 45 && logical <= 65 {
-					c = powerColor
-				}
 			case 3:
 				if (cpuPower || gpuPower) && logical >= 6 && logical <= 26 {
 					c = powerColor

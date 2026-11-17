@@ -25,11 +25,10 @@ type appConfig struct {
 		GPU            bool   `json:"gpu"`
 	} `json:"sensors"`
 	Display struct {
-		Interval      string `json:"interval"`
-		PhaseInterval string `json:"phaseInterval"`
-		Power         string `json:"power"`
-		PowerInterval string `json:"powerInterval"`
-		Brightness    int    `json:"brightness"`
+		Interval      string                `json:"interval"`
+		PhaseInterval string                `json:"phaseInterval"`
+		Brightness    int                   `json:"brightness"`
+		Slots         map[string]slotConfig `json:"slots"`
 	} `json:"display"`
 	Theme themeConfig `json:"theme"`
 }
@@ -52,14 +51,13 @@ var zoneNames = []string{"cpu.temp", "cpu.load", "gpu.temp", "gpu.load"}
 
 func defaultAppConfig() appConfig {
 	var c appConfig
-	c.Version = 1
+	c.Version = 2
 	c.Sensors.CPUTemperature = "tctl" // no automatic fabricated 'CPU diode' conversion
 	c.Sensors.GPU = true              // PA120 has its own physical GPU row
 	c.Display.Interval = "1s"
 	c.Display.PhaseInterval = "3s"
-	c.Display.Power = "rotate"
-	c.Display.PowerInterval = "4s"
 	c.Display.Brightness = 75
+	c.Display.Slots = defaultDisplaySlots()
 	c.Theme.Preset = "minimal"
 	c.Theme.Color = "#FFFFFF"
 	c.Theme.PowerColor = "#FF9A00"
@@ -117,8 +115,8 @@ func readAppConfig(path string) (appConfig, error) {
 }
 
 func validateAppConfig(c appConfig) error {
-	if c.Version != 1 {
-		return fmt.Errorf("version must be 1 (got %d)", c.Version)
+	if c.Version != 2 {
+		return fmt.Errorf("version must be 2 (got %d)", c.Version)
 	}
 	if c.Device.PM < 0 || c.Device.PM > 255 {
 		return fmt.Errorf("device.pm must be 0..255")
@@ -138,7 +136,6 @@ func validateAppConfig(c appConfig) error {
 	}{
 		{"display.interval", c.Display.Interval, 200 * time.Millisecond},
 		{"display.phaseInterval", c.Display.PhaseInterval, 200 * time.Millisecond},
-		{"display.powerInterval", c.Display.PowerInterval, 200 * time.Millisecond},
 	} {
 		d, e := time.ParseDuration(x.value)
 		if e != nil || d < x.min {
@@ -148,10 +145,8 @@ func validateAppConfig(c appConfig) error {
 	if c.Display.Brightness < 0 || c.Display.Brightness > 100 {
 		return errors.New("display.brightness must be 0..100")
 	}
-	switch c.Display.Power {
-	case "off", "rotate", "replace":
-	default:
-		return fmt.Errorf("display.power %q: use off, rotate or replace", c.Display.Power)
+	if err := validateDisplaySlots(c.Display.Slots); err != nil {
+		return err
 	}
 	switch c.Theme.Preset {
 	case "minimal", "thermal", "night", "custom":
@@ -254,7 +249,7 @@ func configCommand(args []string) error {
 		return err
 	}
 	if verb == "check" {
-		fmt.Printf("Config valid: %s (theme=%s, gpu=%t, power=%s)\n", path, c.Theme.Preset, c.Sensors.GPU, c.Display.Power)
+		fmt.Printf("Config valid: %s (theme=%s, gpu=%t, slots=%d)\n", path, c.Theme.Preset, c.Sensors.GPU, len(c.Display.Slots))
 		return nil
 	}
 	data, err := json.MarshalIndent(c, "", "  ")

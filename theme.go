@@ -118,33 +118,55 @@ func resolveZoneColor(z zoneConfig, name string, m metrics) rgb {
 	return fallback
 }
 
-func buildPA120Colors(theme themeConfig, m metrics, cpuWatts, gpuWatts bool) []rgb {
+func buildPA120Colors(theme themeConfig, m metrics, selected map[string]slotSelection) []rgb {
 	colors := make([]rgb, 84)
-	paint := func(name string, indices []int) {
+	paint := func(name, slot string, indices []int, digits []int) {
 		z := effectiveZone(theme, name)
 		color := resolveZoneColor(z, name, m)
 		for _, i := range indices {
 			colors[i] = color
 		}
-	}
-	cpuTemp := append([]int{0, 1, 4, 5}, indexRange(10, 31)...)
-	cpuLoad := append([]int{6, 80, 81}, indexRange(31, 45)...)
-	gpuTemp := append([]int{2, 3, 7, 8}, indexRange(45, 66)...)
-	gpuLoad := append([]int{9, 82, 83}, indexRange(66, 80)...)
-	paint("cpu.temp", cpuTemp)
-	paint("cpu.load", cpuLoad)
-	paint("gpu.temp", gpuTemp)
-	paint("gpu.load", gpuLoad)
-	if cpuWatts {
-		power := parseRGB(effectiveZone(theme, "cpu.temp").PowerColor)
-		for _, i := range indexRange(10, 31) {
-			colors[i] = power
+		if selected[slot].Valid && metricKind(selected[slot].Metric) == "power" {
+			powerColor := parseRGB(z.PowerColor)
+			for _, i := range digits {
+				colors[i] = powerColor
+			}
 		}
 	}
-	if gpuWatts {
-		power := parseRGB(effectiveZone(theme, "gpu.temp").PowerColor)
-		for _, i := range indexRange(45, 66) {
-			colors[i] = power
+	cpuTempDigits := indexRange(10, 31)
+	cpuLoadDigits := indexRange(31, 45)
+	gpuTempDigits := indexRange(45, 66)
+	gpuLoadDigits := indexRange(66, 80)
+	paint("cpu.temp", cpuPrimary, append([]int{0, 1, 4, 5}, cpuTempDigits...), cpuTempDigits)
+	paint("cpu.load", cpuSecondary, append([]int{6, 80, 81}, cpuLoadDigits...), cpuLoadDigits)
+	paint("gpu.temp", gpuPrimary, append([]int{2, 3, 7, 8}, gpuTempDigits...), gpuTempDigits)
+	paint("gpu.load", gpuSecondary, append([]int{9, 82, 83}, gpuLoadDigits...), gpuLoadDigits)
+	return colors
+}
+
+// An explicitly selected global color link overrides each zone's base
+// palette, but never mistakes an unrelated powered sensor for the metric
+// actually shown in that physical slot.
+func globalPA120Colors(theme themeConfig, selected map[string]slotSelection, base rgb) []rgb {
+	colors := make([]rgb, 84)
+	for i := range colors {
+		colors[i] = base
+	}
+	regions := []struct {
+		name, zone string
+		begin, end int
+	}{
+		{cpuPrimary, "cpu.temp", 10, 31},
+		{cpuSecondary, "cpu.load", 31, 45},
+		{gpuPrimary, "gpu.temp", 45, 66},
+		{gpuSecondary, "gpu.load", 66, 80},
+	}
+	for _, region := range regions {
+		if s := selected[region.name]; s.Valid && metricKind(s.Metric) == "power" {
+			power := parseRGB(effectiveZone(theme, region.zone).PowerColor)
+			for i := region.begin; i < region.end; i++ {
+				colors[i] = power
+			}
 		}
 	}
 	return colors
