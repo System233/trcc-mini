@@ -92,30 +92,41 @@ func resolveSettingsPath(explicit string) string {
 }
 
 func readAppConfig(path string) (appConfig, error) {
-	c := defaultAppConfig()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
+		return defaultAppConfig(), nil
 	}
 	if err != nil {
-		return c, fmt.Errorf("read config %q: %w", path, err)
+		return appConfig{}, fmt.Errorf("read config %q: %w", path, err)
 	}
+	c, err := parseAppConfig(data)
+	if err != nil {
+		return c, fmt.Errorf("invalid config %q: %w", path, err)
+	}
+	return c, nil
+}
+
+// The hot reloader uses this exact parser too. A reload must never treat a
+// missing or partially written file as default settings.
+func parseAppConfig(data []byte) (appConfig, error) {
+	c := defaultAppConfig()
+	var err error
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return c, fmt.Errorf("invalid config %q: expected an object, got null", path)
+		return c, errors.New("expected an object, got null")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err = d.Decode(&c); err != nil {
-		return c, fmt.Errorf("invalid config %q: %w", path, err)
+		return c, err
 	}
 	var trailing any
 	if e := d.Decode(&trailing); e == nil {
-		return c, fmt.Errorf("invalid config %q: unexpected trailing JSON", path)
+		return c, errors.New("unexpected trailing JSON")
 	} else if !errors.Is(e, io.EOF) {
-		return c, fmt.Errorf("invalid config %q: %w", path, e)
+		return c, e
 	}
 	if err = validateAppConfig(c); err != nil {
-		return c, fmt.Errorf("invalid config %q: %w", path, err)
+		return c, err
 	}
 	return c, nil
 }

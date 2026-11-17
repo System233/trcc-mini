@@ -95,6 +95,11 @@ Usage:
   trcc-mini sensors                     Read-only CPU/GPU diagnostics
   trcc-mini detect                      Read-only HID enumeration
   trcc-mini probe                       Detect and cache hardware model
+  trcc-mini service install             Install auto-start Windows service (admin)
+  trcc-mini service start               Start installed service
+  trcc-mini service stop                Stop installed service
+  trcc-mini service status              Query Windows service state
+  trcc-mini service uninstall           Unregister stopped Windows service
   trcc-mini help                        Show help
 
 Options:
@@ -135,6 +140,12 @@ func run() error {
 		}
 		return errors.New("usage: trcc-mini sensors")
 	}
+	if verb == "service" {
+		return serviceCommand(os.Args[2:])
+	}
+	if verb == "service-run" {
+		return runWindowsService(os.Args[2:])
+	}
 	if verb != "detect" && verb != "probe" && verb != "run" && verb != "once" {
 		return fmt.Errorf("unknown command %q (run 'trcc-mini help')", verb)
 	}
@@ -152,16 +163,23 @@ func run() error {
 	if verb == "detect" {
 		return printDevices()
 	}
+	return runDisplay(verb, opts, context.Background(), nil)
+}
 
+// runDisplay is shared by console and Windows Service Control Manager.
+// A service supplies a cancellable context and a callback invoked only when
+// the device/sensors have been prepared successfully.
+func runDisplay(verb string, opts commandOptions, parent context.Context, ready func()) error {
 	var config appConfig
+	configPath := resolveSettingsPath(opts.ConfigPath)
 	if verb == "probe" {
 		config = defaultAppConfig()
 	} else {
-		path := resolveSettingsPath(opts.ConfigPath)
-		if _, err := os.Stat(path); err != nil {
-			return fmt.Errorf("configuration %q unavailable (%w): run 'trcc-mini config init'", path, err)
+		if _, err := os.Stat(configPath); err != nil {
+			return fmt.Errorf("configuration %q unavailable (%w): run 'trcc-mini config init'", configPath, err)
 		}
-		config, err = readAppConfig(path)
+		var err error
+		config, err = readAppConfig(configPath)
 		if err != nil {
 			return err
 		}
@@ -181,7 +199,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 && !opts.DryRun {
+	if len(paths) == 0 && !opts.DryRun && ready == nil {
 		return errors.New("USB 0416:8001 not found")
 	}
 	path := ""
@@ -261,9 +279,14 @@ func run() error {
 	}
 	var d *hidDevice
 	if !opts.DryRun {
-		d, err = openHID(path)
-		if err != nil {
-			return fmt.Errorf("open HID: %w (close vendor TRCC first)", err)
+		if path != "" {
+			d, err = openHID(path)
+			if err != nil && ready == nil {
+				return fmt.Errorf("open HID: %w (close vendor TRCC first)", err)
+			}
+		}
+		if d == nil && ready != nil {
+			fmt.Fprintln(os.Stderr, "SERVICE: HID not ready; retrying connection without probing or stopping the service")
 		}
 		defer func() {
 			if d != nil {
@@ -273,22 +296,29 @@ func run() error {
 	}
 	var cpu cpuLoadSampler
 	pawn, err := openPawn()
+	defer func() {
+		if pawn != nil {
+			pawn.Close()
+		}
+	}()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NOTE: CPU temperature source %s unavailable: %v; CPU temperature digits will be blank\n", config.Sensors.CPUTemperature, err)
-	} else {
-		defer pawn.Close()
 	}
 	var gpu *nvmlSensor
+	defer func() {
+		if gpu != nil {
+			gpu.Close()
+		}
+	}()
 	if config.Sensors.GPU {
 		gpu, err = openNVML()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "NOTE: NVIDIA GPU sensor unavailable:", err)
-		} else {
-			defer gpu.Close()
 		}
 	} else if style == 2 {
 		fmt.Fprintln(os.Stderr, "NOTE: PA120 GPU row disabled in config (sensors.gpu=false)")
 	}
+	lastPawnRetry, lastGPURetry := time.Now(), time.Now()
 	// A single frame cannot derive power from a cumulative energy counter:
 	// prime once, then allow a real interval before taking the render sample.
 	// This is read-only and affects only the explicit one-shot diagnostic.
@@ -299,15 +329,88 @@ func run() error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	var reloader *configReloader
+	if verb == "run" {
+		reloader = newConfigReloader(configPath, config)
+	}
 	var previous []byte
+	var lastUSBError string
+	var lastUSBErrorAt time.Time
+	var reconnectAfter time.Time
 	start := time.Now()
 	nextPhase := -1
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt)
 	defer stop()
 	fmt.Printf("Running: style=%d, sampling=%s, cpu-temp-source=%s, link=%s, brightness=%d%%, dry=%v\n", style, period.String(), config.Sensors.CPUTemperature, config.Theme.Link, config.Display.Brightness, opts.DryRun)
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
+	lastConfigCheck := time.Now()
+	if ready != nil {
+		ready()
+	}
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		// USB, GPU and PawnIO may appear later during Windows boot. Keep
+		// the auto-start service alive rather than requiring a manual restart.
+		if pawn == nil && time.Since(lastPawnRetry) >= 10*time.Second {
+			lastPawnRetry = time.Now()
+			if restored, e := openPawn(); e == nil {
+				pawn = restored
+				fmt.Println("CPU/PawnIO sensor connected")
+			}
+		}
+		if gpu == nil && config.Sensors.GPU && time.Since(lastGPURetry) >= 10*time.Second {
+			lastGPURetry = time.Now()
+			if restored, e := openNVML(); e == nil {
+				gpu = restored
+				fmt.Println("GPU/NVML sensor connected")
+			}
+		}
+		// Content hash catches atomic rename and same-mtime rewrites. It also
+		// keeps invalid partial writes from replacing active state.
+		if reloader != nil && time.Since(lastConfigCheck) >= 500*time.Millisecond {
+			lastConfigCheck = time.Now()
+			var stagedGPU *nvmlSensor
+			updated, reloadErr := reloader.check(func(old, next appConfig) error {
+				if !old.Sensors.GPU && next.Sensors.GPU {
+					var e error
+					stagedGPU, e = openNVML()
+					if e != nil {
+						return fmt.Errorf("GPU enable requires NVML: %w", e)
+					}
+				}
+				return nil
+			})
+			if reloadErr != nil {
+				fmt.Fprintln(os.Stderr, "CONFIG:", reloadErr)
+			}
+			if !updated && stagedGPU != nil {
+				stagedGPU.Close()
+			}
+			if updated {
+				oldGPUEnabled := config.Sensors.GPU
+				config = reloader.current
+				if oldGPUEnabled && !config.Sensors.GPU && gpu != nil {
+					gpu.Close()
+					gpu = nil
+				}
+				if stagedGPU != nil {
+					gpu = stagedGPU
+				}
+				period, _ = time.ParseDuration(config.Display.Interval)
+				phasePeriod, _ = time.ParseDuration(config.Display.PhaseInterval)
+				baseColor, _ = parseColor(config.Theme.Color)
+				powerColor, _ = parseColor(config.Theme.PowerColor)
+				needCPUPower, needGPUPower = powerSensorsRequired(config.Display.Slots, style, config.Derived)
+				needRAM, needVRAM = memorySensorsRequired(config.Display.Slots, style)
+				ticker.Reset(period)
+				start = time.Now()
+				previous = nil // force immediate frame after successful reload
+				fmt.Printf("CONFIG reloaded: interval=%s brightness=%d%% GPU=%t\n", period, config.Display.Brightness, config.Sensors.GPU)
+			}
+		}
 		m := metrics{Load: cpu.Sample()}
 		if pawn != nil {
 			if t, e := pawn.ReadTemp(config.Sensors.CPUTemperature); e == nil {
@@ -416,11 +519,13 @@ func run() error {
 				}
 			} else {
 				if d == nil {
-					var found []string
-					found, err = enumerateHID()
-					if err == nil && len(found) == 1 {
-						path = found[0]
-						d, err = openHID(path)
+					if !time.Now().Before(reconnectAfter) {
+						reconnectAfter = time.Now().Add(2 * time.Second)
+						found, enumerateErr := enumerateHID()
+						if enumerateErr == nil && len(found) == 1 {
+							path = found[0]
+							d, err = openHID(path)
+						}
 					}
 				}
 				if d == nil {
@@ -429,13 +534,19 @@ func run() error {
 					e = d.SendFrame(packet, timeout)
 				}
 				if e != nil {
-					fmt.Fprintln(os.Stderr, "USB frame failed:", e)
+					// A long-lived service must not flood its disk log if the USB
+					// cable is disconnected or another process owns the device.
+					if e.Error() != lastUSBError || time.Since(lastUSBErrorAt) >= 10*time.Second {
+						fmt.Fprintln(os.Stderr, "USB frame failed:", e)
+						lastUSBError, lastUSBErrorAt = e.Error(), time.Now()
+					}
 					if d != nil {
 						d.Close()
 						d = nil
 					}
 					previous = nil // retry next tick even if the data is unchanged
 				} else {
+					lastUSBError = ""
 					if opts.Verbose {
 						fmt.Printf("CPU load=%d%% temp=%s; GPU load=%s temp=%s; phase=%d LEDs=%d\n", m.Load, m.TempString(), m.GPULoadString(), m.GPUTempString(), phase, activeCount(mask))
 						if style == 2 {

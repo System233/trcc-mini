@@ -11,6 +11,8 @@
 notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 .\trcc-mini.exe config check   # 检查配置，不访问 USB
 .\trcc-mini.exe run            # 按配置运行；Ctrl+C 停止
+.\trcc-mini.exe service install # 管理员终端安装开机自启 Windows 服务
+.\trcc-mini.exe service start   # 启动服务
 ```
 
 已识别的设备（例如 PM=16 的 PA120 Digital）自动使用设备缓存，无须在运行命令中重复指定型号。若已有配置，`config init` 会拒绝覆盖。
@@ -27,11 +29,14 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 .\trcc-mini.exe run --config C:\temp\my-trcc.json
 .\trcc-mini.exe run -c C:\temp\my-trcc.json -v
 .\trcc-mini.exe probe                       # 仅未识别硬件时执行，通常只握手一次
+.\trcc-mini.exe service status              # 查询服务状态
+.\trcc-mini.exe service stop                # 停止服务
+.\trcc-mini.exe service uninstall           # 卸载服务注册（不删除配置）
 ```
 
 **参数规范：** `-c`、`-n`、`-v`、`-h` 是单字符短参数；对应长参数为 `--config`、`--dry-run`、`--verbose`、`--help`。传感器、GPU、功耗、亮度和主题不提供命令行参数，只在 JSON 中配置。
 
-默认配置文件 `trcc-mini.json` 位于 EXE 同目录；启动前必须存在，可通过 `config init` 创建。用户也可以通过 `--config FILE` 指定另一个位置，不进行隐式查找或迁移。设备握手缓存 `device.json` 位于 Windows 用户配置目录，是**另一份自动生成的文件**，不要用它配置主题。
+默认配置文件 `trcc-mini.json` 位于 EXE 同目录；启动前必须存在，可通过 `config init` 创建。用户也可以通过 `--config FILE` 指定另一个位置，不进行隐式查找或迁移。设备握手缓存 `device.json` 位于 Windows 用户配置目录，是**另一份自动生成的文件**，不要用它配置主题。**Windows 服务以 LocalSystem 账户运行，必须在 `device.pm` 中明确配置型号，不能依赖交互用户的设备缓存。**
 
 ## 配置字段（示例）
 
@@ -189,7 +194,33 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 - `theme.link` 是非四区域设备的全局颜色联动方式；若在 PA120 上设为非 `static`，则切换到全局统一颜色模式；**但 `indicators.*.color` 的显式设置始终具有最高优先级**。
 - `powerColor` 可分别为**四个物理区域**的功耗数字指定颜色；配置 `cpu.secondary`、`gpu.secondary` 区域的颜色也有效。颜色格式为 RGB 十六进制，例如 `#FFB000`。
 
-配置在 **启动时读取**；编辑 `trcc-mini.json` 后重启 CLI 生效。无需安装配置守护服务，也不会额外产生后台进程。
+### Windows 原生服务
+
+使用 Windows Service Control Manager（SCM）管理**同一份**原生 Go EXE，不依赖额外运行时或独立代理：
+
+```powershell
+# 确认 trcc-mini.json 中 device.pm 是已确认的产品型号（PA120 为 16）
+.\trcc-mini.exe config check
+.\trcc-mini.exe service install          # 管理员终端；注册为自动启动
+.\trcc-mini.exe service start            # 立即启动（安装默认不自动启动）
+.\trcc-mini.exe service status           # running/stopped
+.\trcc-mini.exe service stop
+.\trcc-mini.exe service uninstall        # 必须先停止服务
+```
+
+如果配置不在 EXE 旁，安装时可使用 `service install -c C:\path\trcc-mini.json`。为了避免 LocalSystem 服务执行可被普通用户替换的开发目录程序，**安装命令会把当前 EXE 复制至受 Windows 权限保护的 `%ProgramFiles%\TRCCMini\trcc-mini.exe`**，服务运行该安装副本；JSON 继续使用安装时指定的绝对路径，保持可编辑及热重载。更新服务 EXE 时应先停止并卸载服务，再从新版程序重新安装；卸载不会删除 JSON 或已复制的 EXE。
+
+Windows 服务使用 LocalSystem 账户，`device.pm: 0` 无法使用你的个人设备握手缓存，安装会直接拒绝；已确认的 PA120 Digital 请设置 `"device": {"pm":16}`，不会重复进行一次性 HID 探测。
+
+服务运行日志写入 `%ProgramData%\TRCCMini\service.log`，包含配置重载结果、设备连接错误和启动/停止信息。服务响应 Windows 停止/关机通知并退出；USB 设备或传感器在启动阶段未就绪时会重试，而不是每次都停止服务。**不要同时启动普通 `run` 与 Windows 服务，也不要与原厂 TRCC 程序争抢同一 USB 设备。**
+
+### 配置热重载与失败保护
+
+`run` 与 Windows 服务**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，须成功准备 NVML 后才提交新配置。
+
+如果 JSON 不完整、某字段非法、文件被删除或新 GPU 资源无法初始化，则**拒绝本次重载，继续运行上一份有效配置**，并记录一条错误，不以默认配置覆盖现场值。编辑磁盘文件不会被程序自动回滚：请纠正 JSON 后再次保存。唯一明确不支持热切换的业务参数是 `device.pm`（硬件型号），修改时拒绝重载，需要停止并重启程序或服务。自定义配置文件路径只能在启动/安装时确定。
+
+配置按内容哈希检测，即使编辑器保留文件时间戳也能识别有效修改。服务只负责自身显示循环，不会再次 HID 探测设备型号。
 
 ## 安全与验证
 
