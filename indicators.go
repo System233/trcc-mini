@@ -18,7 +18,7 @@ type colorRule struct {
 }
 type indicatorConfig struct {
 	Unit    string     `json:"unit,omitempty"` // C/F/percent/W/GiB/MiB
-	Symbols []string   `json:"symbols"`        // hardware C,F,% glyphs; [] disables all
+	Symbols []string   `json:"symbols"`        // hardware CPU,GPU,C,F,% glyphs; [] disables all
 	Color   *colorRule `json:"color,omitempty"`
 }
 
@@ -122,8 +122,8 @@ func validateSlotIndicators(slots map[string]slotConfig, indicators map[string]i
 		}
 		seen := make(map[string]bool)
 		for _, symbol := range setting.Symbols {
-			if symbol != "C" && symbol != "F" && symbol != "%" {
-				return fmt.Errorf("indicators.%s.symbols: unknown hardware symbol %q (C/F/%%)", name, symbol)
+			if symbol != "CPU" && symbol != "GPU" && symbol != "C" && symbol != "F" && symbol != "%" {
+				return fmt.Errorf("indicators.%s.symbols: unknown hardware symbol %q (CPU/GPU/C/F/%%)", name, symbol)
 			}
 			if seen[symbol] {
 				return fmt.Errorf("indicators.%s.symbols: duplicate %q", name, symbol)
@@ -138,14 +138,48 @@ func validateSlotIndicators(slots map[string]slotConfig, indicators map[string]i
 			}
 			if setting, exists := indicators[metric]; exists && setting.Symbols != nil {
 				for _, symbol := range setting.Symbols {
-					if primarySlot(name) && symbol == "%" {
-						return fmt.Errorf("display.slots.%s: %s requires %% LED but this three-digit region has no %% symbol", name, metric)
-					}
-					if !primarySlot(name) && symbol != "%" {
-						return fmt.Errorf("display.slots.%s: %s requires %s LED but this two-digit region only has %%", name, metric, symbol)
+					if err := validatePhysicalSymbol(name, symbol); err != nil {
+						return fmt.Errorf("display.slots.%s: indicators.%s.symbols: %w", name, metric, err)
 					}
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// The PA120 has only one CPU word on the upper row and one GPU word on
+// the lower row. Unit glyphs C/F are on three-digit groups, % on
+// two-digit groups. It cannot draw the opposite row's word.
+func validatePhysicalSymbol(slot, symbol string) error {
+	switch symbol {
+	case "CPU":
+		if slot == cpuPrimary || slot == cpuSecondary {
+			return nil
+		}
+	case "GPU":
+		if slot == gpuPrimary || slot == gpuSecondary {
+			return nil
+		}
+	case "C", "F":
+		if primarySlot(slot) {
+			return nil
+		}
+	case "%":
+		if !primarySlot(slot) {
+			return nil
+		}
+	}
+	return fmt.Errorf("symbol %q has no physical LED in %s", symbol, slot)
+}
+
+func validateRowLabels(labels map[string]string) error {
+	for name, mode := range labels {
+		if name != "cpu" && name != "gpu" {
+			return fmt.Errorf("display.rowLabels: unknown row %q (cpu/gpu)", name)
+		}
+		if mode != "auto" && mode != "on" && mode != "off" {
+			return fmt.Errorf("display.rowLabels.%s: expected auto, on or off, got %q", name, mode)
 		}
 	}
 	return nil
@@ -171,15 +205,24 @@ func metricSymbols(name string, slot string, indicators map[string]indicatorConf
 	if ok && setting.Symbols != nil {
 		return setting.Symbols
 	}
+	// Labels are physical row-level LEDs shared by primary and secondary.
+	// Defaults follow the metric source, and explicit [] disables all glyphs
+	// requested by this metric, including the CPU/GPU row label.
+	var symbols []string
+	if strings.HasPrefix(name, "cpu.") && (slot == cpuPrimary || slot == cpuSecondary) {
+		symbols = append(symbols, "CPU")
+	} else if strings.HasPrefix(name, "gpu.") && (slot == gpuPrimary || slot == gpuSecondary) {
+		symbols = append(symbols, "GPU")
+	}
 	unit := unitForMetric(name, indicators, derived)
 	if primarySlot(slot) {
 		if unit == "C" || unit == "F" {
-			return []string{unit}
+			symbols = append(symbols, unit)
 		}
 	} else if unit == "percent" {
-		return []string{"%"}
+		symbols = append(symbols, "%")
 	}
-	return nil
+	return symbols
 }
 
 // Hex RGB stops are interpreted against the numeric value displayed in the
@@ -237,6 +280,44 @@ func metricColorOverrides(colors []rgb, selected map[string]slotSelection, indic
 		}
 		for _, idx := range part {
 			colors[idx] = chosen
+		}
+	}
+	// CPU/GPU word LEDs are shared by the two numeric groups of each
+	// row. Prefer the primary metric's explicit color when both request
+	// the same word, then the secondary metric. Never depend on map order.
+	for _, row := range []struct {
+		word               string
+		primary, secondary string
+		led1, led2         int
+	}{
+		{"CPU", cpuPrimary, cpuSecondary, 0, 1},
+		{"GPU", gpuPrimary, gpuSecondary, 2, 3},
+	} {
+		for _, slot := range []string{row.primary, row.secondary} {
+			s := selected[slot]
+			if !s.Valid {
+				continue
+			}
+			found := false
+			for _, symbol := range s.Symbols {
+				if symbol == row.word {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			style, ok := indicators[s.Metric]
+			if !ok || style.Color == nil {
+				continue
+			}
+			c, ok := colorFromRule(*style.Color, s.Value)
+			if !ok {
+				continue
+			}
+			colors[row.led1], colors[row.led2] = c, c
+			break
 		}
 	}
 }

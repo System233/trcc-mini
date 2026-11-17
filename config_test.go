@@ -36,6 +36,7 @@ func TestAppConfigLifecycle(t *testing.T) {
 func TestMetricConfigFileRoundtrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "metrics.json")
 	c := defaultAppConfig()
+	c.Display.RowLabels = map[string]string{"cpu": "off", "gpu": "on"}
 	c.Indicators = map[string]indicatorConfig{
 		"gpu.power": {Symbols: []string{"C", "F"}, Color: &colorRule{
 			Mode: "threshold", Stops: []colorStop{
@@ -74,6 +75,9 @@ func TestMetricConfigFileRoundtrip(t *testing.T) {
 	if loaded.Version != 3 {
 		t.Fatal("wrong schema version")
 	}
+	if loaded.Display.RowLabels["cpu"] != "off" || loaded.Display.RowLabels["gpu"] != "on" {
+		t.Fatalf("row label overrides lost: %v", loaded.Display.RowLabels)
+	}
 }
 
 func TestMetricConfigValidationFromJSON(t *testing.T) {
@@ -86,6 +90,11 @@ func TestMetricConfigValidationFromJSON(t *testing.T) {
 		`"indicators":{"cpu.power":{"color":{}}}`,
 		`"indicators":{"unknown.key":{"color":{"mode":"solid","value":"#FFFFFF"}}}`,
 		`"derived":{"system.power.estimated":{"operation":"sum","sources":["cpu.temperature","gpu.power"]}}`,
+		`"display":{"rowLabels":{"cpu":"hide"}}`,
+		`"display":{"rowLabels":{"cpu":"off","gpu":"show"}}`,
+		`"display":{"rowLabels":{"unrecognized":"on"}}`,
+		`"indicators":{"cpu.power":{"symbols":["GPU","C","F"]}}`,
+		`"indicators":{"gpu.power":{"symbols":["CPU","C","F"]}}`,
 	} {
 		b := []byte(`{"version":3,` + extra + `}`)
 		if err := os.WriteFile(p, b, 0600); err != nil {

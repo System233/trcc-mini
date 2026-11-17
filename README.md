@@ -47,6 +47,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
     "interval": "1s",
     "phaseInterval": "3s",
     "brightness": 75,
+    "rowLabels": {"cpu": "auto", "gpu": "auto"},
     "slots": {
       "cpu.primary": {
         "metrics": ["cpu.temperature", "cpu.power"],
@@ -77,11 +78,14 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
       }
     },
     "cpu.power": {
-      "symbols": ["C", "F"],
+      "symbols": ["CPU", "C", "F"],
       "color": {"mode": "solid", "value": "#FFB000"}
     },
+    "cpu.load": {
+      "symbols": ["CPU", "%"]
+    },
     "gpu.power": {
-      "symbols": ["C", "F"],
+      "symbols": ["GPU", "C", "F"],
       "color": {
         "mode": "threshold",
         "stops": [
@@ -90,6 +94,9 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
           {"at": 200, "color": "#FF4040"}
         ]
       }
+    },
+    "gpu.load": {
+      "symbols": ["GPU", "%"]
     },
     "memory.used": {"unit": "GiB"}
   },
@@ -133,7 +140,8 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 - **固定显示：** `"metrics": ["gpu.power"]`；**温度/功耗轮换：** `"metrics": ["cpu.temperature", "cpu.power"], "interval": "4s"`。无需任何全局功耗模式。
 - 轮换自动跳过本次不可用、超出该区域数字位数的指标。若全部不可用，该位置熄灭，绝不显示伪造的 `0`。
 - 三位数区域可显示 `0..999`，两位数区域可显示 `0..99` 和专用 LED 支持的 `100`。**数字硬件不具有小数点，实际显示会四舍五入为整数**；例如 4.5 GiB 在面板上显示为 5，但诊断日志仍显示真实小数。180W 无法在两位数区域正确表达时会跳过；不会错误地裁剪成 100W。温度/百分比指示符跟随**当前实际指标**点亮，没有专用 W 符号。
-- CPU/GPU 铭牌是固定的物理 LED；该行只要仍有对应本机 CPU/GPU 来源的有效指标就会保留名称灯。当该行两个区域都显示另一颗设备的来源时，关闭原铭牌，避免错误标注数据来源。
+- CPU/GPU 铭牌是**每行共用的物理 LED**，而不是独立分配给两个数字区域。默认自动根据该行当前有效指标的来源亮起；跨 CPU/GPU 来源显示时不会错误点亮另一个设备名称。也可以用下面的 `display.rowLabels` 强制开启或关闭。
+- `display.rowLabels`：`{"cpu":"auto","gpu":"auto"}`（根据当前有效指标自动显示）、`"on"`（即使传感器无数据也强制点亮该行铭牌）、`"off"`（即使某个指标请求铭牌，也强制关闭）。两个选项互不影响；省略时使用 `auto`。
 - `display.slots` 为 PA120 专用显示布局，其他型号继续使用各自硬件布局，不套用 PA120 四区域规则。
 - `display.interval`：采样间隔，例如 `1s`；仅帧内容变化时发送更新。
 - `display.brightness`：0～100；底层 USB 协议还有固定的硬件色彩比例系数。
@@ -160,8 +168,10 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 - `color.mode: "gradient"`：`stops` 按 `at` 数值递增，两个相邻色标之间线性插值。
 - `color.mode: "threshold"`：`stops` 按 `at` 数值递增；达到阈值立即换色，不插值。阈值边界属于新的色阶。
 - `unit`：温度可用 `C`、`F`（**数值也会摄氏转华氏**）；内存/显存可用 `GiB`、`MiB`。百分比和瓦数只使用自身原生单位。颜色阈值参照**换算后的显示数值**。
-- `symbols`：硬件符号灯组合。例如 `"symbols": ["C", "F"]` 可以在功耗数字旁边同时点亮 C 与 F 作为自定义标识；**这只是 LED 标记，不意味着功耗被换算为温度**。支持 `C`、`F`、`%`，明确指定空数组 `[]` 表示不点亮任何单位灯。
-- 三位数区域具有 C/F 灯，二位数区域只有 % 灯。配置与物理区域不匹配时 `config check` 会报错；设备上**没有 W、GiB 或 MiB 的专用符号**。无法显示的位数会跳过，不会截断数值。
+- `symbols`：支持全部五种可配置实体符号：`CPU`、`GPU`、`C`、`F`、`%`。例如 `"symbols": ["CPU", "C", "F"]` 在上排功耗数字旁同时显示 CPU 铭牌和 C+F 灯；`"symbols": ["GPU", "%"]` 在下排两位数显示 GPU 铭牌及百分比灯。**这只是 LED 标记，不意味着功耗被换算为温度。**
+- `symbols` 未配置时，软件根据指标来源及数值单位选择符合物理位置的默认灯。明确指定 `"symbols": []` 表示**此指标不请求任何符号**，但同一行的另一项有效指标可能仍请求共用 CPU/GPU 铭牌。若希望整行无条件关闭名称灯，使用 `display.rowLabels.cpu/gpu: "off"`。
+- **物理布局：** 上排 CPU 名称（LED 0/1）、下排 GPU 名称（LED 2/3）；上排三位数 C/F（LED 4/5）、上排两位数 %（LED 6）；下排三位数 C/F（LED 7/8）、下排两位数 %（LED 9）。CPU/GPU 名称可以由同一行的任一指标请求，但不可以调换到对面行。配置与物理区域不匹配时 `config check` 会报错；设备上**没有 W、GiB 或 MiB 的专用符号**。无法显示的位数会跳过，不会截断数值。
+- **符号颜色：** 指标级 `color` 同样应用于当前数字区的 C/F/%；CPU/GPU 铭牌共享整行，如果两个指标都指定了颜色，优先使用该行三位数指标的显式颜色，其次是两位数指标，否则使用主题颜色。
 
 ### 派生指标
 

@@ -254,7 +254,7 @@ func memorySensorsRequired(slots map[string]slotConfig, style int) (ram, vram bo
 	return
 }
 
-func renderPA120Slots(slots map[string]slotSelection) []bool {
+func renderPA120Slots(slots map[string]slotSelection, rowLabels ...map[string]string) []bool {
 	out := make([]bool, 84)
 	for _, name := range slotNames {
 		s := slots[name]
@@ -299,20 +299,40 @@ func renderPA120Slots(slots map[string]slotSelection) []bool {
 			encodePartial(out, value, 66, 82, 83)
 		}
 	}
-	// CPU/GPU labels are physical row markers, not properties of a
-	// particular digit group. A load-only row still needs its label.
-	for _, name := range []string{cpuPrimary, cpuSecondary} {
-		if s := slots[name]; s.Valid && strings.HasPrefix(s.Metric, "cpu.") {
-			mark(out, 0)
-			mark(out, 1)
-			break
-		}
+	var overrides map[string]string
+	if len(rowLabels) > 0 {
+		overrides = rowLabels[0]
 	}
-	for _, name := range []string{gpuPrimary, gpuSecondary} {
-		if s := slots[name]; s.Valid && strings.HasPrefix(s.Metric, "gpu.") {
-			mark(out, 2)
-			mark(out, 3)
-			break
+	for _, row := range []struct {
+		name          string
+		symbol        string
+		first, second string
+		led1, led2    int
+	}{
+		{"cpu", "CPU", cpuPrimary, cpuSecondary, 0, 1},
+		{"gpu", "GPU", gpuPrimary, gpuSecondary, 2, 3},
+	} {
+		lit := false
+		for _, slot := range []string{row.first, row.second} {
+			s := slots[slot]
+			if !s.Valid {
+				continue
+			}
+			for _, symbol := range s.Symbols {
+				if symbol == row.symbol {
+					lit = true
+				}
+			}
+		}
+		switch overrides[row.name] {
+		case "on":
+			lit = true
+		case "off":
+			lit = false
+		}
+		if lit {
+			mark(out, row.led1)
+			mark(out, row.led2)
 		}
 	}
 	return out

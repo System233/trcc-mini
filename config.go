@@ -31,6 +31,7 @@ type appConfig struct {
 		PhaseInterval string                `json:"phaseInterval"`
 		Brightness    int                   `json:"brightness"`
 		Slots         map[string]slotConfig `json:"slots"`
+		RowLabels     map[string]string     `json:"rowLabels,omitempty"`
 	} `json:"display"`
 	Theme themeConfig `json:"theme"`
 }
@@ -62,6 +63,7 @@ func defaultAppConfig() appConfig {
 	c.Display.PhaseInterval = "3s"
 	c.Display.Brightness = 75
 	c.Display.Slots = defaultDisplaySlots()
+	c.Display.RowLabels = map[string]string{"cpu": "auto", "gpu": "auto"}
 	c.Theme.Preset = "minimal"
 	c.Theme.Color = "#FFFFFF"
 	c.Theme.PowerColor = "#FF9A00"
@@ -150,6 +152,9 @@ func validateAppConfig(c appConfig) error {
 		return errors.New("display.brightness must be 0..100")
 	}
 	if err := validateDisplaySlots(c.Display.Slots, c.Derived); err != nil {
+		return err
+	}
+	if err := validateRowLabels(c.Display.RowLabels); err != nil {
 		return err
 	}
 	if err := validateDerived(c.Derived); err != nil {

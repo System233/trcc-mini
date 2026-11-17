@@ -373,7 +373,7 @@ func run() error {
 		var mask []bool
 		if style == 2 {
 			selected = resolveDisplaySlots(config.Display.Slots, m, time.Since(start), config.Indicators)
-			mask = renderPA120Slots(selected)
+			mask = renderPA120Slots(selected, config.Display.RowLabels)
 		} else {
 			mask, err = renderWithPower(style, m, phase, m.CPUPowerValid, m.GPUPowerValid)
 			if err != nil {
