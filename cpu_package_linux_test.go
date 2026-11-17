@@ -61,6 +61,10 @@ func TestLinuxAMDHWMonNUMAExactSocketBinding(t *testing.T) {
 	writeCPUPackageFixture(t, filepath.Join(chip, "name"), "k10temp\n")
 	writeCPUPackageFixture(t, filepath.Join(chip, "temp1_input"), "58000\n")
 	writeCPUPackageFixture(t, filepath.Join(chip, "temp1_label"), "Tctl\n")
+	writeCPUPackageFixture(t, filepath.Join(chip, "temp2_label"), "Tccd1\n")
+	writeCPUPackageFixture(t, filepath.Join(chip, "temp2_input"), "49000\n")
+	writeCPUPackageFixture(t, filepath.Join(chip, "temp3_label"), "Tccd2\n")
+	writeCPUPackageFixture(t, filepath.Join(chip, "temp3_input"), "61000\n")
 	writeCPUPackageFixture(t, filepath.Join(chip, "device", "numa_node"), "1\n")
 	nodes := filepath.Join(root, "nodes")
 	writeCPUPackageFixture(t, filepath.Join(nodes, "node1", "cpulist"), "2-3\n")
@@ -72,6 +76,16 @@ func TestLinuxAMDHWMonNUMAExactSocketBinding(t *testing.T) {
 	source.Sample(&m)
 	if temp, ok := readMetric(m, "cpu1.temperature"); !ok || temp != 58 {
 		t.Fatalf("AMD CPU1 Tctl %.2f valid=%v", temp, ok)
+	}
+	for name, want := range map[string]float64{
+		"cpu1.ccd0.temperature": 49,
+		"cpu1.ccd1.temperature": 61,
+		"cpu1.temperature.max":  61,
+	} {
+		got, valid := readMetric(m, name)
+		if !valid || got != want {
+			t.Errorf("%s = %.1f valid=%v expected %.1f", name, got, valid, want)
+		}
 	}
 	writeCPUPackageFixture(t, filepath.Join(nodes, "node1", "cpulist"), "1-2\n")
 	source = discoverLinuxPackageTelemetryWithNodes(root, nodes, packages)

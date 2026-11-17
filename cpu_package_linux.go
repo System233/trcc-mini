@@ -18,6 +18,7 @@ import (
 
 type linuxPackageTelemetry struct {
 	tempPath string
+	amdHWMon string
 	power    cpuPowerProbe
 }
 type linuxPackageTelemetryIndex struct {
@@ -213,7 +214,12 @@ func discoverLinuxPackageTelemetryWithNodes(sysClass, nodesRoot string, packages
 		}
 	}
 	for physical, path := range uniqueLinuxSources(temperaturePaths) {
-		result.devices[indices[physical]].tempPath = path
+		device := result.devices[indices[physical]]
+		device.tempPath = path
+		chipDir := filepath.Dir(path)
+		if raw, e := os.ReadFile(filepath.Join(chipDir, "name")); e == nil && strings.TrimSpace(string(raw)) == "k10temp" {
+			device.amdHWMon = chipDir
+		}
 	}
 
 	// Match package-N names exactly. The nested core/uncore RAPL domains
@@ -289,12 +295,32 @@ func (p *linuxPackageTelemetryIndex) Sample(m *metrics) {
 		return
 	}
 	for index, device := range p.devices {
+		maxTemp := 0.0
 		if device.tempPath != "" {
 			milli, e := readSysFloat(device.tempPath)
 			if e == nil && milli >= 1000 && milli <= 130000 {
-				m.setExtra(indexedMetricName("cpu", index, "temperature"), milli/1000)
-				m.setExtra(indexedMetricName("cpu", index, "temperature.max"), milli/1000)
+				maxTemp = milli / 1000
+				m.setExtra(indexedMetricName("cpu", index, "temperature"), maxTemp)
 			}
+		}
+		if device.amdHWMon != "" {
+			readings, _ := readHWMonTemps(hwmonChip{directory: device.amdHWMon, name: "k10temp"})
+			for source, temp := range readings {
+				if !strings.HasPrefix(source, "ccd") {
+					continue
+				}
+				physicalCCD, e := strconv.Atoi(strings.TrimPrefix(source, "ccd"))
+				if e != nil || physicalCCD < 1 || physicalCCD > 16 {
+					continue
+				}
+				m.setExtra(indexedMetricName("cpu", index, fmt.Sprintf("ccd%d.temperature", physicalCCD-1)), temp)
+				if temp > maxTemp {
+					maxTemp = temp
+				}
+			}
+		}
+		if maxTemp > 0 {
+			m.setExtra(indexedMetricName("cpu", index, "temperature.max"), maxTemp)
 		}
 		if watts, valid := readLinuxPackagePower(&device.power); valid {
 			m.setExtra(indexedMetricName("cpu", index, "power"), watts)
