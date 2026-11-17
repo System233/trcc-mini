@@ -25,6 +25,8 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 .\trcc-mini.exe once                        # 按每个区域的第一个有效指标生成一帧，不写 USB
 .\trcc-mini.exe run -v                      # 输出详细传感器读数
 .\trcc-mini.exe sensors                     # 只读传感器诊断，不访问 USB
+.\trcc-mini.exe sensors list                # 枚举 CPU/GPU 及全部可配置指标
+.\trcc-mini.exe sensors list --json         # 机器可读，缺失读数为 null
 .\trcc-mini.exe detect                      # 只读 USB 枚举
 .\trcc-mini.exe run --config C:\temp\my-trcc.json
 .\trcc-mini.exe run -c C:\temp\my-trcc.json -v
@@ -167,6 +169,35 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 | `gpu.memory.load` | %，显存使用率 |
 | `system.power.estimated` | W，**仅在 `derived` 明确配置后可用**，且为估算，不是墙上插座实测 |
 
+#### 多 CPU/GPU 设备索引与精细指标
+
+无需另加 `devices`、`sources` 等设备配置。直接使用 `cpu0`、`cpu1`、`gpu0`、`gpu1` 等物理编号；无数字后缀的 `cpu`、`gpu` 表示综合指标。
+
+```powershell
+trcc-mini sensors list
+trcc-mini sensors list --json
+```
+
+Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、设备、功能号排序；NVIDIA NVML 通过真实 PCI 位置精确绑定，不再直接把 NVML 的 GPU0 等同于 `gpu0`。不包含 USB 虚拟显示器。若 PCI 无法可靠匹配，则宁可保持 N/A，也不把另一块 GPU 的值赋给该编号。例如本机识别为 `gpu0 = RTX 4070`、`gpu1 = AMD Radeon 核显`；请以**当前机器**的枚举结果为准。CPU 是物理封装编号，不是逻辑处理器编号；单插槽时可使用 `cpu0`，多插槽温度/功耗在当前寄存器采集器无法确定归属时保持每插槽 N/A，不能把全系统值冒充某个 CPU。
+
+| 指标示例 | 实际含义 / 单位 |
+| --- | --- |
+| `cpu0.temperature` / `cpu0.ccd0.temperature` | CPU 封装控制温度 / CCD0 温度，°C；仅有真实读数才有效 |
+| `cpu0.temperature.max` | 当前能读取的封装/CCD 温度最高值，°C |
+| `cpu0.power` / `cpu0.load` | CPU 封装功耗 W / 单插槽 CPU 负载 % |
+| `cpu0.clock` / `cpu.clock.max` | 系统报告的平均/最高当前处理器时钟，MHz；Windows 的 Power API 值不是逐周期测得的有效频率 |
+| `gpu0.temperature` / `gpu0.load` | 指定 GPU 温度 °C / 使用率 % |
+| `gpu0.power` / `gpu0.power.limit` | GPU 当前功率 W / 驱动设置的功率上限 W，**两者不是同一指标** |
+| `gpu0.clock.core` / `gpu0.clock.memory` | 核心、显存时钟 MHz |
+| `gpu0.load.memory` / `gpu0.memory.load` | 显存控制器忙碌率 / 显存空间占用率，% |
+| `gpu0.memory.used` / `gpu0.memory.total` | 专用显存 GiB，核显不虚构独立显存 |
+| `gpu0.fan.load` / `gpu0.pcie.tx` / `gpu0.pcie.rx` | 风扇百分比 / PCIe MB/s |
+| `gpu0.temperature.hotspot` / `gpu0.temperature.memory` | 驱动支持时的热点/显存温度；否则 N/A |
+
+所有可配置的设备指标名称可通过 `sensors list` 查看。即使配置使用了该名称，也不表示当前型号/驱动一定支持该传感器。无索引综合指标遵循：功率和容量求和、温度和 GPU 负载取最高值、CPU 总负载使用系统提供的加权值、显存占用百分比使用同一组有完整已用/总量读数的设备加总后计算。**N/A 不参与聚合，只有全部无有效数据时才显示 N/A**。此规则不代表缺失数据的设备功率为真实的 0W。当前 Windows AMD/Intel GPU 厂商遥测后端尚未接入，设备仍会在枚举中占用自身编号。
+
+使用示例：将任意现有 `display.slots.gpu.primary.metrics` 设置为 `["gpu0.power", "gpu0.temperature"]`（并设置 `interval`），即可在同一三位数区域轮换**指定显卡**的实际功耗与温度。其他指标级符号、颜色配置照旧。三位数不能容纳 4300MHz 等四位频率时，该值不会被错误截断，现有显示选择器将跳过。
+
 每个指标在 `indicators` 下独立设置，不依赖其被分配到哪个物理位置。**当前指标级颜色与符号渲染适用于 PA120 Digital（style 2）**，其他显示布局仍使用各自的原生渲染方式：
 
 - `color.mode: "solid"`：使用 `value: "#RRGGBB"` 固定 RGB 颜色。
@@ -180,7 +211,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 ### 派生指标
 
-`derived` 使用 `operation: "sum"` 和 `sources` 定义多个瓦数指标的加总，`offset` 是你手动估计的其他系统负载功耗（默认 0W）。可以递归引用其他派生项，但不允许循环依赖、重复计入同一输入、或混合温度与功耗。
+`derived` 使用 `operation: "sum"` 和 `sources` 定义多个瓦数指标的加总，`offset` 是你手动估计的其他系统负载功耗（默认 0W）。可以递归引用其他派生项，但不允许循环依赖、重复计入同一输入、混合温度与功耗、把 `gpu0.power.limit` 当作实际功耗，也不允许将 `gpu.power` 与 `gpu0.power` 或 `cpu.power` 与 `cpu0.power` 重复求和。
 
 例如：`cpu.power + gpu.power + offset` 可定义 `system.power.estimated`，但**CPU 封装+GPU 功耗不等于整机输入功耗**。主板、内存、SSD、风扇、PSU 损耗等通常没有直接测量；若没有外接功率计，不能将其标为真实整机功耗。派生求和**忽略 N/A**，仅累加可用值并加上 `offset`；**全部源无效时结果才是 N/A**。缺失的功耗不会被当作零瓦实测，综合结果可能是不完整的估算。
 

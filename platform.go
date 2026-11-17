@@ -25,3 +25,26 @@ type gpuTelemetry interface {
 	ReadMemory() (usedGiB, totalGiB, percent float64, valid bool)
 	Close()
 }
+
+// Optional multi-GPU samples; legacy providers can remain unindexed until
+// their platform-specific device enumeration is implemented.
+type indexedGPU interface {
+	SampleIndexed(*metrics)
+}
+
+// Discovery metadata is separate from actual sensor validity. In particular,
+// an Intel/AMD GPU with no active Windows provider still occupies its index.
+type hardwareDevice struct {
+	Kind        string `json:"kind"`
+	Index       int    `json:"index"`
+	Name        string `json:"name"`
+	Vendor      string `json:"vendor"`
+	Bus         string `json:"bus,omitempty"`
+	PNP         string `json:"pnp,omitempty"`
+	Driver      string `json:"driver"`
+	PCIValid    bool   `json:"-"`
+	PCIBus      uint32 `json:"-"`
+	PCIDevice   uint32 `json:"-"`
+	PCIFunction uint32 `json:"-"`
+	PCIVendor   uint16 `json:"-"`
+}

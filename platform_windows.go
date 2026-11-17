@@ -20,7 +20,7 @@ func openCPUSensor() (cpuTelemetry, error) {
 	return p, nil
 }
 func openGPUSensor() (gpuTelemetry, error) {
-	g, err := openNVML()
+	g, err := openWindowsGPUInventory()
 	if err != nil {
 		return nil, err
 	}

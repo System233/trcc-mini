@@ -48,6 +48,10 @@ func TestDerivedInvalidConfig(t *testing.T) {
 		{"system.power.estimated": {Operation: "sum", Sources: []string{"cpu.power", "gpu.power"}, Offset: math.NaN()}},
 		{"a.power.estimated": {Operation: "sum", Sources: []string{"b.power.estimated", "cpu.power"}}, "b.power.estimated": {Operation: "sum", Sources: []string{"a.power.estimated", "gpu.power"}}},
 		{"system.power.estimated": {Operation: "sum", Sources: []string{"cpu.power", "gpu.power"}}, "double.power.estimated": {Operation: "sum", Sources: []string{"system.power.estimated", "gpu.power"}}},
+		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu.power", "gpu0.power"}}},
+		{"overlap.estimated": {Operation: "sum", Sources: []string{"cpu.power", "cpu0.power.cores"}}},
+		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu0.power", "gpu0.power.board"}}},
+		{"limit.estimated": {Operation: "sum", Sources: []string{"cpu.power", "gpu0.power.limit"}}},
 	}
 	for i, v := range bad {
 		if err := validateDerived(v); err == nil {

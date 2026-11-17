@@ -31,7 +31,7 @@ var builtinUnits = map[string]string{
 }
 
 func supportedMetric(name string, derived map[string]derivedConfig) bool {
-	if _, ok := builtinUnits[name]; ok {
+	if metricNativeUnit(name) != "" {
 		return true
 	}
 	_, ok := derived[name]
@@ -39,7 +39,7 @@ func supportedMetric(name string, derived map[string]derivedConfig) bool {
 }
 
 func unitForMetric(name string, indicators map[string]indicatorConfig, derived map[string]derivedConfig) string {
-	native := builtinUnits[name]
+	native := metricNativeUnit(name)
 	if _, ok := derived[name]; ok || strings.HasSuffix(name, ".estimated") {
 		native = "W"
 	}
@@ -97,7 +97,7 @@ func validateSlotIndicators(slots map[string]slotConfig, indicators map[string]i
 			return fmt.Errorf("indicators.%s is not a defined metric", name)
 		}
 		unit := unitForMetric(name, indicators, derived)
-		native := builtinUnits[name]
+		native := metricNativeUnit(name)
 		if _, ok := derived[name]; ok {
 			native = "W"
 		}
@@ -186,7 +186,7 @@ func validateRowLabels(labels map[string]string) error {
 }
 
 func displayValue(name string, value float64, indicators map[string]indicatorConfig, derived map[string]derivedConfig) float64 {
-	native := builtinUnits[name]
+	native := metricNativeUnit(name)
 	if _, ok := derived[name]; ok {
 		native = "W"
 	}
@@ -209,9 +209,10 @@ func metricSymbols(name string, slot string, indicators map[string]indicatorConf
 	// Defaults follow the metric source, and explicit [] disables all glyphs
 	// requested by this metric, including the CPU/GPU row label.
 	var symbols []string
-	if strings.HasPrefix(name, "cpu.") && (slot == cpuPrimary || slot == cpuSecondary) {
+	kind, _, _, _ := metricDevice(name)
+	if kind == "cpu" && (slot == cpuPrimary || slot == cpuSecondary) {
 		symbols = append(symbols, "CPU")
-	} else if strings.HasPrefix(name, "gpu.") && (slot == gpuPrimary || slot == gpuSecondary) {
+	} else if kind == "gpu" && (slot == gpuPrimary || slot == gpuSecondary) {
 		symbols = append(symbols, "GPU")
 	}
 	unit := unitForMetric(name, indicators, derived)

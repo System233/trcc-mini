@@ -93,6 +93,7 @@ Usage:
   trcc-mini run                         Run the configured CPU/GPU display
   trcc-mini once                        Render one frame (never writes USB)
   trcc-mini sensors                     Read-only CPU/GPU diagnostics
+  trcc-mini sensors list [--json]       Indexed CPU/GPU inventory and metrics
   trcc-mini detect                      Read-only HID enumeration
   trcc-mini probe                       Detect and cache hardware model
   trcc-mini service install             Install auto-start Windows service (admin)
@@ -133,6 +134,9 @@ func run() error {
 	if verb == "sensors" {
 		if len(os.Args) == 2 {
 			return sensorDiagnostics()
+		}
+		if len(os.Args) > 2 && os.Args[2] == "list" {
+			return sensorListCommand(os.Args[3:])
 		}
 		if len(os.Args) == 3 && (os.Args[2] == "-h" || os.Args[2] == "--help") {
 			usage()
@@ -429,6 +433,8 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 				}
 			}
 		}
+		populatePlatformCPUMetrics(&m, pawn)
+		populateCPUIndexed(&m)
 		if gpu != nil {
 			m.GPUTemp, m.GPUTempValid, m.GPULoad, m.GPULoadValid = gpu.Read()
 			if needGPUPower {
@@ -449,6 +455,9 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 				m.setExtra("gpu.memory.total", total)
 				m.setExtra("gpu.memory.load", usage)
 			}
+		}
+		if indexed, ok := gpu.(indexedGPU); ok {
+			indexed.SampleIndexed(&m)
 		}
 		applyDerived(&m, config.Derived)
 		phase := int(time.Since(start) / phasePeriod)

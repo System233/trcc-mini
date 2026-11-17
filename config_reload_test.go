@@ -93,6 +93,33 @@ func TestTransactionalReloadRejectsInvalidKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestIndexedSensorSwitchHotReloadDoesNotRequireHardware(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "indexed.json")
+	first := defaultAppConfig()
+	first.Device.PM = 16
+	writeReloadConfig(t, path, first)
+	reloader := newConfigReloader(path, first)
+	next := first
+	// Deliberately choose an indexed GPU that may be missing. Syntax is
+	// valid; at runtime the unavailable sensor is N/A, not a reload error.
+	next.Display.Slots = make(map[string]slotConfig)
+	for key, val := range first.Display.Slots {
+		next.Display.Slots[key] = val
+	}
+	next.Display.Slots[gpuPrimary] = slotConfig{Metrics: []string{"gpu0.power", "gpu1.power"}, Interval: "2s"}
+	next.Display.Slots[gpuSecondary] = slotConfig{Metrics: []string{"gpu1.load"}}
+	writeReloadConfig(t, path, next)
+	if updated, err := reloader.check(nil); !updated || err != nil {
+		t.Fatalf("indexed GPU reload rejected: updated=%t err=%v", updated, err)
+	}
+	if got := reloader.current.Display.Slots[gpuPrimary].Metrics[1]; got != "gpu1.power" {
+		t.Fatalf("indexed sensor changed during reload: %s", got)
+	}
+	if updated, err := reloader.check(nil); updated || err != nil {
+		t.Fatalf("unchanged indexed config should be silent: %t %v", updated, err)
+	}
+}
+
 func TestReloadRejectsRestartOnlyOrFailedResourcePreparation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	first := defaultAppConfig()

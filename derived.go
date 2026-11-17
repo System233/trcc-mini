@@ -22,7 +22,7 @@ func validateDerived(defined map[string]derivedConfig) error {
 		if !strings.HasSuffix(name, ".estimated") || len(name) > 128 {
 			return fmt.Errorf("derived key %q must end in .estimated to distinguish estimates from measured power", name)
 		}
-		if _, builtin := builtinUnits[name]; builtin {
+		if metricNativeUnit(name) != "" {
 			return fmt.Errorf("derived %s conflicts with measured metric", name)
 		}
 		if d.Operation != "sum" || len(d.Sources) < 2 || len(d.Sources) > 16 {
@@ -40,7 +40,7 @@ func validateDerived(defined map[string]derivedConfig) error {
 				return fmt.Errorf("derived.%s: repeated source %q would double-count power", name, source)
 			}
 			seen[source] = true
-			if _, builtin := builtinUnits[source]; builtin && source != "cpu.power" && source != "gpu.power" {
+			if metricNativeUnit(source) != "" && !metricIsMeasuredPower(source) {
 				return fmt.Errorf("derived.%s: only power metrics may be summed (%s)", name, source)
 			}
 		}
@@ -75,6 +75,7 @@ func validateDerived(defined map[string]derivedConfig) error {
 	// but it is not an honest whole-system estimate.
 	for name := range defined {
 		leaves := make(map[string]bool)
+		var leafNames []string
 		var visitLeaves func(string) error
 		visitLeaves = func(source string) error {
 			if spec, isDerived := defined[source]; isDerived {
@@ -88,7 +89,13 @@ func validateDerived(defined map[string]derivedConfig) error {
 			if leaves[source] {
 				return fmt.Errorf("derived.%s: input %s would be counted more than once", name, source)
 			}
+			for _, other := range leafNames {
+				if powerSourcesOverlap(source, other) {
+					return fmt.Errorf("derived.%s: %s and %s overlap in power coverage", name, source, other)
+				}
+			}
 			leaves[source] = true
+			leafNames = append(leafNames, source)
 			return nil
 		}
 		if err := visitLeaves(name); err != nil {

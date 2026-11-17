@@ -94,7 +94,7 @@ func (s slotSelection) String() string {
 	}
 	suffix := s.Unit
 	if suffix == "" {
-		suffix = builtinUnits[s.Metric]
+		suffix = metricNativeUnit(s.Metric)
 	}
 	if suffix == "percent" {
 		suffix = "%"
@@ -112,6 +112,17 @@ func metricKind(metric string) string {
 	if strings.HasSuffix(metric, ".estimated") {
 		return "power"
 	}
+	_, _, suffix, ok := metricDevice(metric)
+	if ok {
+		switch {
+		case suffix == "power" || strings.HasPrefix(suffix, "power."):
+			return "power"
+		case strings.Contains(suffix, "temperature"):
+			return "temperature"
+		case suffix == "load" || strings.HasPrefix(suffix, "load.") || strings.HasSuffix(suffix, ".load"):
+			return "load"
+		}
+	}
 	if i := strings.IndexByte(metric, '.'); i >= 0 {
 		return metric[i+1:]
 	}
@@ -119,6 +130,9 @@ func metricKind(metric string) string {
 }
 
 func readMetric(m metrics, name string) (float64, bool) {
+	if s, ok := m.Extras[name]; ok {
+		return s.Value, s.Valid
+	}
 	switch name {
 	case "cpu.temperature":
 		return m.Temp, m.TempValid
@@ -219,12 +233,14 @@ func powerSensorsRequired(slots map[string]slotConfig, style int, definitions ..
 		for _, metric := range slots[name].Metrics {
 			var visit func(string)
 			visit = func(source string) {
-				switch source {
-				case "cpu.power":
-					cpu = true
-				case "gpu.power":
-					gpu = true
-				default:
+				kind, _, suffix, isDevice := metricDevice(source)
+				if isDevice && (suffix == "power" || strings.HasPrefix(suffix, "power.")) {
+					if kind == "cpu" {
+						cpu = true
+					} else {
+						gpu = true
+					}
+				} else {
 					for _, dependency := range derived[source].Sources {
 						visit(dependency)
 					}
@@ -246,7 +262,8 @@ func memorySensorsRequired(slots map[string]slotConfig, style int) (ram, vram bo
 			if strings.HasPrefix(metric, "memory.") {
 				ram = true
 			}
-			if strings.HasPrefix(metric, "gpu.memory.") {
+			kind, _, suffix, ok := metricDevice(metric)
+			if ok && kind == "gpu" && strings.HasPrefix(suffix, "memory.") {
 				vram = true
 			}
 		}
