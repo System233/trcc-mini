@@ -16,6 +16,7 @@ type nvmlSensor struct {
 	shutdown *syscall.Proc
 	getTemp  *syscall.Proc
 	getLoad  *syscall.Proc
+	getPower *syscall.Proc
 }
 type nvmlUtil struct{ GPU, Memory uint32 }
 
@@ -45,6 +46,10 @@ func openNVML() (*nvmlSensor, error) {
 	if err != nil {
 		return cleanup(err)
 	}
+	power, err := dll.FindProc("nvmlDeviceGetPowerUsage")
+	if err != nil {
+		return cleanup(err)
+	}
 	ok, _, _ := init.Call()
 	if ok != 0 {
 		return cleanup(fmt.Errorf("NVML init returned %d", ok))
@@ -55,7 +60,7 @@ func openNVML() (*nvmlSensor, error) {
 		shutdown.Call()
 		return cleanup(fmt.Errorf("NVML GPU[0] unavailable: code %d", ok))
 	}
-	return &nvmlSensor{dll: dll, device: device, shutdown: shutdown, getTemp: temp, getLoad: load}, nil
+	return &nvmlSensor{dll: dll, device: device, shutdown: shutdown, getTemp: temp, getLoad: load, getPower: power}, nil
 }
 func (n *nvmlSensor) Read() (temp float64, tempValid bool, load int, loadValid bool) {
 	if n == nil {
@@ -74,6 +79,17 @@ func (n *nvmlSensor) Read() (temp float64, tempValid bool, load int, loadValid b
 		loadValid = true
 	}
 	return
+}
+func (n *nvmlSensor) ReadPower() (float64, bool) {
+	if n == nil {
+		return 0, false
+	}
+	var milliwatts uint32
+	code, _, _ := n.getPower.Call(n.device, uintptr(unsafe.Pointer(&milliwatts)))
+	if code != 0 || milliwatts > 1000000 {
+		return 0, false
+	}
+	return float64(milliwatts) / 1000, true
 }
 func (n *nvmlSensor) Close() {
 	if n != nil && n.dll != nil {

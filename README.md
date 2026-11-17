@@ -26,6 +26,10 @@ Only `trcc-mini.exe` is required at runtime. The officially signed
 .\trcc-mini.exe run -pm 16 -link load              # PA120 example: CPU% linked RGB
 .\trcc-mini.exe run -pm 16 -link temp              # CPU °C linked RGB
 .\trcc-mini.exe run -pm 16 -gpu -link gpu-temp     # optional RTX 4070 GPU
+.\trcc-mini.exe run -gpu -power rotate              # PA120: alternate temperature and watts
+.\trcc-mini.exe run -gpu -power replace             # PA120: watts instead of temperature
+.\trcc-mini.exe run -gpu -power rotate -power-period 4s -power-color ff9a00
+.\trcc-mini.exe once -pm 16 -gpu -dry-run -temp 58 -cpu-power 185 -power replace
 .\trcc-mini.exe run -pm 3 -link static -color ff7700 # AX120 example
 .\trcc-mini.exe once -pm 16 -temp 55 -dry-run       # no USB writes
 ```
@@ -53,6 +57,12 @@ PM from its model (use `-pm`, *not* the style ID). A temporary example
   on the test machine, compared with approximately **9 MiB** for CPU-only.
 - AMD Ryzen CPU Tctl: signed official PawnIO AMD Family17-1Ah module, embedded
   in the EXE and loaded through `DeviceIoControl`.
+- AMD Ryzen CPU package watts: read `MSR 0xC0010299` for the energy unit
+  and `0xC001029B` for the package-energy counter, then divide the
+  rollover-safe energy difference by elapsed time (first sample warms up).
+- NVIDIA GPU watts: `nvmlDeviceGetPowerUsage`, milliwatts converted to watts.
+  On modern GPUs the value may be a smoothed one-second average rather
+  than instantaneous PCIe/PSU consumption.
 - A **one-time installation of the official signed PawnIO kernel driver**
   from <https://pawnio.eu/> plus Administrator privilege is required to
   measure CPU temperature. This program does **not** install or bundle the
@@ -65,6 +75,32 @@ PM from its model (use `-pm`, *not* the style ID). A temporary example
   1/2/3/5/6/7/8/13, and optional GPU zones for the same styles.
   Devices that primarily display disk, RAM or clock values
   (styles 4/9/10/11/12) require another metric mapping pass.
+
+### Three-digit watts display
+
+On PA120 (style 2), the physical two-row, four-value layout contains
+3 CPU temperature digits + 2 CPU load digits on the top row and
+3 GPU temperature digits + 2 GPU load digits on the bottom row.
+The three temperature digits can hold watts (`0..999`) with no
+frame-size change, while both percent digits remain visible.
+Use `-power rotate` to show temperatures and watts in turns (default 4s);
+`-power replace` shows watts continuously instead of temperatures.
+While displaying watts, the Celsius indicator is **off**, and the
+three-digit numbers are amber (`-power-color` is customizable).
+There is no dedicated **W** indicator on this physical profile; color
+and the alternating interval distinguish units. If a sensor is absent,
+its temperature digits remain in temperature mode instead of showing
+fake 0W.
+
+AK120 (style 3) and LF8/LF12 (styles 5/6) have dedicated 3-digit
+watts fields: with `-power rotate` or `-power replace`, they show
+available watt values in those fields without replacing temperatures.
+Both kinds of temperature/power readings use the same single process.
+The live USB model has NOT been probed while the original vendor app runs,
+so the PA120 PM value must NOT be assumed for this unit without verification.
+
+`-cpu-power` / `-gpu-power` provide dry-run-only test values and are
+rejected for real USB output.
 
 LED frames are sent only on change, at 1Hz default sampling; each complete
 frame respects a 30ms firmware cooldown. HID transfers use cancellable

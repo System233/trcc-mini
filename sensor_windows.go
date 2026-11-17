@@ -7,7 +7,9 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -59,10 +61,16 @@ func (s *cpuLoadSampler) Sample() int {
 var amdSignedModule []byte
 
 type pawnSensor struct {
-	handle   syscall.Handle
-	pciMutex syscall.Handle
-	lastTemp float64
-	haveLast bool
+	handle       syscall.Handle
+	pciMutex     syscall.Handle
+	lastTemp     float64
+	haveLast     bool
+	energyUnit   float64
+	lastEnergy   uint32
+	lastEnergyAt time.Time
+	lastWatts    float64
+	haveWatts    bool
+	powerInitErr error
 }
 
 func openPawn() (*pawnSensor, error) {
@@ -86,6 +94,17 @@ func openPawn() (*pawnSensor, error) {
 		return nil, fmt.Errorf("CreateMutex Access_PCI: %w", winError(e))
 	}
 	p.pciMutex = syscall.Handle(mh)
+	// MSR_PWR_UNIT [12:8] gives the joules represented by one
+	// package-energy counter increment. An initial energy sample primes
+	// the delta counter and must not be mistaken for zero-watt power.
+	unit, err := p.readMSR(0xC0010299)
+	if err != nil {
+		// Power reading is optional: failure must not disable CPU Tctl.
+		p.powerInitErr = fmt.Errorf("AMD package energy unit MSR: %w", err)
+		return p, nil
+	}
+	bits := (unit >> 8) & 0x1f
+	p.energyUnit = math.Ldexp(1, -int(bits))
 	return p, nil
 }
 func (p *pawnSensor) Close() {
@@ -147,4 +166,57 @@ func (p *pawnSensor) Read() (float64, error) {
 	p.lastTemp = t
 	p.haveLast = true
 	return t, nil
+}
+
+func (p *pawnSensor) readMSR(msr uint64) (uint64, error) {
+	var b [40]byte
+	copy(b[:32], "ioctl_read_msr")
+	binary.LittleEndian.PutUint64(b[32:], msr)
+	raw, err := p.call(0xA1B22104, b[:], 8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(raw), nil
+}
+
+// energyWatts implements the upstream 32-bit package-energy counter
+// subtraction, including rollover. The first reading is a baseline.
+func energyWatts(prev, current uint32, unit float64, dt time.Duration) (float64, bool) {
+	if dt < 10*time.Millisecond || unit <= 0 {
+		return 0, false
+	}
+	watts := float64(current-prev) * unit / dt.Seconds()
+	if math.IsNaN(watts) || math.IsInf(watts, 0) || watts < 0 || watts > 1000 {
+		return 0, false
+	}
+	return watts, true
+}
+
+func (p *pawnSensor) ReadPower() (float64, bool, error) {
+	if p.powerInitErr != nil {
+		return 0, false, p.powerInitErr
+	}
+	value, err := p.readMSR(0xC001029B)
+	if err != nil {
+		return 0, false, err
+	}
+	now := time.Now()
+	counter := uint32(value)
+	if p.lastEnergyAt.IsZero() {
+		p.lastEnergyAt = now
+		p.lastEnergy = counter
+		return 0, false, nil
+	}
+	watts, valid := energyWatts(p.lastEnergy, counter, p.energyUnit, now.Sub(p.lastEnergyAt))
+	if valid {
+		p.lastEnergyAt = now
+		p.lastEnergy = counter
+		p.lastWatts = watts
+		p.haveWatts = true
+		return watts, true, nil
+	}
+	if p.haveWatts {
+		return p.lastWatts, true, nil
+	}
+	return 0, false, nil
 }

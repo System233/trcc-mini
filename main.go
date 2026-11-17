@@ -102,6 +102,11 @@ Options:
   -gpu-temp 42           OVERRIDE GPU temperature for testing
   -gpu-load 42           OVERRIDE GPU load for testing
   -gpu                   Enable optional NVIDIA NVML GPU sensor
+  -power off|rotate|replace  PA120: rotate/replace 3-digit temperatures with watts
+  -power-period 4s       Each PA120 temperature/power display interval
+  -power-color ff9a00   Color of watt digits (load digits keep regular color)
+  -cpu-power 125         Test-only power override; requires -dry-run
+  -gpu-power 140         Test-only power override; requires -dry-run
   -force-probe           Allow handshake despite an existing cached profile
   -dry-run               Don't open or write to USB
   -timeout 400ms          HID I/O timeout
@@ -142,6 +147,11 @@ func run() error {
 	gpuTempOverride := fs.Float64("gpu-temp", -999, "explicit test GPU temperature")
 	gpuLoadOverride := fs.Int("gpu-load", -1, "explicit test GPU load")
 	gpuEnabled := fs.Bool("gpu", false, "enable NVML GPU sensor (costs additional RAM)")
+	powerMode := fs.String("power", "off", "off|rotate|replace")
+	powerPeriod := fs.Duration("power-period", 4*time.Second, "temperature/power interval")
+	powerColorHex := fs.String("power-color", "ff9a00", "RGB watt digits")
+	cpuPowerOverride := fs.Float64("cpu-power", -1, "dry-run CPU power value")
+	gpuPowerOverride := fs.Float64("gpu-power", -1, "dry-run GPU power value")
 	forceProbe := fs.Bool("force-probe", false, "repeat a one-time handshake")
 	dryRun := fs.Bool("dry-run", false, "no USB writes")
 	timeout := fs.Duration("timeout", 400*time.Millisecond, "USB I/O timeout")
@@ -151,6 +161,15 @@ func run() error {
 	}
 	if *period < 200*time.Millisecond || *phasePeriod < 200*time.Millisecond {
 		return errors.New("period and phase must be >=200ms")
+	}
+	if *powerPeriod < 200*time.Millisecond {
+		return errors.New("power-period must be >=200ms")
+	}
+	if *powerMode != "off" && *powerMode != "rotate" && *powerMode != "replace" {
+		return errors.New("power must be off, rotate or replace")
+	}
+	if (*cpuPowerOverride >= 0 || *gpuPowerOverride >= 0) && !*dryRun {
+		return errors.New("power overrides require -dry-run")
 	}
 	if *brightness < 0 || *brightness > 100 {
 		return errors.New("brightness must be 0..100")
@@ -162,6 +181,10 @@ func run() error {
 		return errors.New("timeout must be >=100ms")
 	}
 	baseColor, err := parseColor(*colorFlag)
+	if err != nil {
+		return err
+	}
+	powerColor, err := parseColor(*powerColorHex)
 	if err != nil {
 		return err
 	}
@@ -262,6 +285,9 @@ func run() error {
 	if !supportsStyle(style) {
 		return fmt.Errorf("style %d has a different use (clock/disk/memory) or is not yet supported by this CPU display CLI", style)
 	}
+	if *powerMode != "off" && style != 2 && style != 3 && style != 5 && style != 6 {
+		return errors.New("watt display is implemented for PA120, AK120, LF8 and LF12; first identify actual device PM")
+	}
 	if verb == "once" {
 		*verbose = true
 	}
@@ -279,7 +305,7 @@ func run() error {
 	}
 	var cpu cpuLoadSampler
 	var pawn *pawnSensor
-	if *tempOverride <= -200 {
+	if *tempOverride <= -200 && *cpuPowerOverride < 0 {
 		var terr error
 		pawn, terr = openPawn()
 		if terr != nil {
@@ -321,8 +347,24 @@ func run() error {
 				fmt.Fprintln(os.Stderr, "sensor:", e)
 			}
 		}
+		if pawn != nil && *powerMode != "off" {
+			watts, ok, e := pawn.ReadPower()
+			if e == nil {
+				m.CPUPower = watts
+				m.CPUPowerValid = ok
+			} else if *verbose {
+				fmt.Fprintln(os.Stderr, "CPU watts:", e)
+			}
+		}
+		if *cpuPowerOverride >= 0 {
+			m.CPUPower = *cpuPowerOverride
+			m.CPUPowerValid = true
+		}
 		if gpu != nil {
 			m.GPUTemp, m.GPUTempValid, m.GPULoad, m.GPULoadValid = gpu.Read()
+			if *powerMode != "off" {
+				m.GPUPower, m.GPUPowerValid = gpu.ReadPower()
+			}
 		}
 		if *gpuTempOverride > -200 {
 			m.GPUTemp = *gpuTempOverride
@@ -331,6 +373,10 @@ func run() error {
 		if *gpuLoadOverride >= 0 && *gpuLoadOverride <= 100 {
 			m.GPULoad = *gpuLoadOverride
 			m.GPULoadValid = true
+		}
+		if *gpuPowerOverride >= 0 {
+			m.GPUPower = *gpuPowerOverride
+			m.GPUPowerValid = true
 		}
 		phase := int(time.Since(start) / *phasePeriod)
 		switch style {
@@ -352,7 +398,14 @@ func run() error {
 		default:
 			phase = 0
 		}
-		mask, e := render(style, m, phase)
+		showPower := *powerMode == "replace" || (*powerMode == "rotate" && int(time.Since(start) / *powerPeriod)%2 == 1)
+		cpuWatts := showPower && m.CPUPowerValid
+		gpuWatts := showPower && m.GPUPowerValid
+		if style == 3 || style == 5 || style == 6 {
+			cpuWatts = m.CPUPowerValid
+			gpuWatts = m.GPUPowerValid
+		}
+		mask, e := renderWithPower(style, m, phase, cpuWatts, gpuWatts)
 		if e != nil {
 			return e
 		}
@@ -369,12 +422,12 @@ func run() error {
 		if *linked == "gpu-load" && m.GPULoadValid {
 			color = thresholdColor(float64(m.GPULoad))
 		}
-		packet := makeFrame(style, sub, mask, color, *brightness)
+		packet := makeFramePower(style, sub, mask, color, *brightness, cpuWatts, gpuWatts, powerColor)
 		changed := !bytesEqual(previous, packet)
 		if changed || time.Since(start) < *period || phase != nextPhase {
 			if *dryRun {
 				if *verbose {
-					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU %d%%/%s, GPU %d%%/%s, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), m.GPULoad, m.GPUTempString(), phase, packet[:minInt(len(packet), 22)])
+					fmt.Printf("DRY frame: %d bytes, activeLED=%d, CPU %d%%/%s/%.1fW(%t), GPU %d%%/%s/%.1fW(%t), wattsSlots CPU=%t GPU=%t, phase=%d, prefix=%x\n", len(packet), activeCount(mask), m.Load, m.TempString(), m.CPUPower, m.CPUPowerValid, m.GPULoad, m.GPUTempString(), m.GPUPower, m.GPUPowerValid, cpuWatts, gpuWatts, phase, packet[:minInt(len(packet), 22)])
 				}
 			} else {
 				if d == nil {

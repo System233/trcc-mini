@@ -12,13 +12,17 @@ import (
 
 type rgb struct{ R, G, B byte }
 type metrics struct {
-	Load         int
-	Temp         float64
-	TempValid    bool
-	GPULoad      int
-	GPUTemp      float64
-	GPULoadValid bool
-	GPUTempValid bool
+	Load          int
+	Temp          float64
+	TempValid     bool
+	CPUPower      float64
+	CPUPowerValid bool
+	GPULoad       int
+	GPUTemp       float64
+	GPULoadValid  bool
+	GPUTempValid  bool
+	GPUPower      float64
+	GPUPowerValid bool
 }
 
 func (m metrics) TempString() string {
@@ -130,6 +134,9 @@ func encodePartial(mask []bool, value, start int, extra0, extra1 int) {
 	encodeNum(mask, value, 2, start)
 }
 func render(style int, m metrics, phase int) ([]bool, error) {
+	return renderWithPower(style, m, phase, false, false)
+}
+func renderWithPower(style int, m metrics, phase int, cpuPower, gpuPower bool) ([]bool, error) {
 	var out []bool
 	switch style {
 	case 1: // AX120: 3 digits, rotate CPU Tctl/CPU load/GPU Tctl/GPU load
@@ -169,12 +176,18 @@ func render(style int, m metrics, phase int) ([]bool, error) {
 		mark(out, 0)
 		mark(out, 1)
 		mark(out, 6)
-		if m.TempValid {
+		if cpuPower && m.CPUPowerValid {
+			encodeNum(out, int(math.Round(m.CPUPower)), 3, 10)
+		} else if m.TempValid {
 			mark(out, 4)
 			encodeNum(out, int(m.Temp), 3, 10)
 		}
 		encodePartial(out, m.Load, 31, 80, 81)
-		if m.GPUTempValid {
+		if gpuPower && m.GPUPowerValid {
+			mark(out, 2)
+			mark(out, 3)
+			encodeNum(out, int(math.Round(m.GPUPower)), 3, 45)
+		} else if m.GPUTempValid {
 			mark(out, 2)
 			mark(out, 3)
 			mark(out, 7)
@@ -195,6 +208,14 @@ func render(style int, m metrics, phase int) ([]bool, error) {
 			load = m.GPULoad
 		} else {
 			mark(out, 0)
+		}
+		power, hasPower := m.CPUPower, m.CPUPowerValid
+		if phase%2 == 1 {
+			power, hasPower = m.GPUPower, m.GPUPowerValid
+		}
+		if hasPower {
+			mark(out, 1)
+			encodeNum(out, int(math.Round(power)), 3, 6)
 		}
 		if valid {
 			mark(out, 2)
@@ -218,6 +239,14 @@ func render(style int, m metrics, phase int) ([]bool, error) {
 			load = m.GPULoad
 		} else {
 			mark(out, 0)
+		}
+		power, hasPower := m.CPUPower, m.CPUPowerValid
+		if phase%2 == 1 {
+			power, hasPower = m.GPUPower, m.GPUPowerValid
+		}
+		if hasPower {
+			mark(out, 4)
+			encodeNum(out, int(math.Round(power)), 3, 28)
 		}
 		if valid {
 			mark(out, 2)
@@ -358,6 +387,10 @@ func encodeMagic(mask []bool, v int) {
 	}
 }
 func makeFrame(style, sub int, mask []bool, color rgb, brightness int) []byte {
+	return makeFramePower(style, sub, mask, color, brightness, false, false, rgb{255, 160, 0})
+}
+
+func makeFramePower(style, sub int, mask []bool, color rgb, brightness int, cpuPower, gpuPower bool, powerColor rgb) []byte {
 	order := remap[style]
 	if style == 5 && sub == 1 {
 		order = remapLF8Sub1
@@ -374,9 +407,27 @@ func makeFrame(style, sub int, mask []bool, color rgb, brightness int) []byte {
 			logical = order[i]
 		}
 		if logical >= 0 && logical < len(mask) && mask[logical] {
-			body[3*i] = byte(math.Trunc(float64(color.R) * scale))
-			body[3*i+1] = byte(math.Trunc(float64(color.G) * scale))
-			body[3*i+2] = byte(math.Trunc(float64(color.B) * scale))
+			c := color
+			switch style {
+			case 2:
+				if cpuPower && logical >= 10 && logical <= 30 {
+					c = powerColor
+				}
+				if gpuPower && logical >= 45 && logical <= 65 {
+					c = powerColor
+				}
+			case 3:
+				if (cpuPower || gpuPower) && logical >= 6 && logical <= 26 {
+					c = powerColor
+				}
+			case 5, 6:
+				if (cpuPower || gpuPower) && logical >= 28 && logical <= 48 {
+					c = powerColor
+				}
+			}
+			body[3*i] = byte(math.Trunc(float64(c.R) * scale))
+			body[3*i+1] = byte(math.Trunc(float64(c.G) * scale))
+			body[3*i+2] = byte(math.Trunc(float64(c.B) * scale))
 		}
 	}
 	result := make([]byte, 20+len(body))
