@@ -178,7 +178,7 @@ trcc-mini sensors list
 trcc-mini sensors list --json
 ```
 
-Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、设备、功能号排序；NVIDIA NVML 通过真实 PCI 位置精确绑定，不再直接把 NVML 的 GPU0 等同于 `gpu0`。不包含 USB 虚拟显示器。若 PCI 无法可靠匹配，则宁可保持 N/A，也不把另一块 GPU 的值赋给该编号。例如本机识别为 `gpu0 = RTX 4070`、`gpu1 = AMD Radeon 核显`；请以**当前机器**的枚举结果为准。CPU 是物理封装编号，不是逻辑处理器编号。**Windows 支持跨处理器组的多 CPU 封装负载**：根据 `GetLogicalProcessorInformationEx` 的物理封装关联位图识别每个处理器组和逻辑线程，再使用 `NtQuerySystemInformationEx` 按组采集累计空闲/内核/用户时间，跨组执行加权求和。只有每个处理器组的实际活动处理器都能在封装中找到唯一归属、且所有组都返回完整数据时才激活跨组采样；任一环节无法验证则 `cpuN.coreM.load`、`cpuN.load` 和跨组 `cpu.load` 保持 N/A，不用单个组的数值冒充全系统。这里的 `coreM` 是该封装内第 M 个**逻辑处理器**（包含 SMT 线程），不是第 M 个物理核心。跨组 CPU 时钟的逐线程映射尚未获得足够的系统 API 保证，因此仍为 N/A；多封装温度/功耗在 MSR 采集器无法确定具体封装归属时也保持 N/A。当前实机验证为单处理器组，跨组分派采用合成拓扑测试，并在本机验证了扩展接口的组 0 调用约定；多组实机仍需单独验收。
+Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、设备、功能号排序；NVIDIA NVML 通过真实 PCI 位置精确绑定，不再直接把 NVML 的 GPU0 等同于 `gpu0`。不包含 USB 虚拟显示器。若 PCI 无法可靠匹配，则宁可保持 N/A，也不把另一块 GPU 的值赋给该编号。例如本机识别为 `gpu0 = RTX 4070`、`gpu1 = AMD Radeon 核显`；请以**当前机器**的枚举结果为准。CPU 是物理封装编号，不是逻辑处理器编号。**Windows 支持跨处理器组的多 CPU 封装负载**：根据 `GetLogicalProcessorInformationEx` 的物理封装关联位图识别每个处理器组和逻辑线程，再使用 `NtQuerySystemInformationEx` 按组采集累计空闲/内核/用户时间，跨组执行加权求和。只有每个处理器组的实际活动处理器都能在封装中找到唯一归属、且所有组都返回完整数据时才激活跨组采样；任一环节无法验证则 `cpuN.coreM.load`、`cpuN.load` 和跨组 `cpu.load` 保持 N/A，不用单个组的数值冒充全系统。这里的 `coreM` 是该封装内第 M 个**逻辑处理器**（包含 SMT 线程），不是第 M 个物理核心。跨组 CPU 时钟的逐线程映射尚未获得足够的系统 API 保证，因此仍为 N/A；多封装时，PawnIO 能读到的温度、功耗直接保留在 `cpu.temperature`、`cpu.power`，不再整机屏蔽；只有不能确定所属封装的 `cpuN.temperature`、`cpuN.power` 保持 N/A。当前实机验证为单处理器组，跨组分派采用合成拓扑测试，并在本机验证了扩展接口的组 0 调用约定；多组实机仍需单独验收。
 
 | 指标示例 | 实际含义 / 单位 |
 | --- | --- |
@@ -291,7 +291,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw
 ```
 
-Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，AMD/Intel CPU 温度分别通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。**Linux 多封装 CPU 温度/功耗按真实封装 ID 匹配**：从 `/sys/devices/system/cpu/cpu*/topology/physical_package_id` 获取物理编号，Intel `coretemp` 的 `Package id N` 温度标签与 RAPL 顶层 `package-N` 能耗域映射为 `cpuN.temperature`、`cpuN.power`。AMD `k10temp` 的 Tctl 标签本身不包含物理封装编号，但当其 PCI 设备公开 NUMA 节点，且该节点 `cpulist` 中所有逻辑处理器都明确归属**同一个物理 CPU** 时，也可安全映射 `cpuN.temperature`。NUMA 节点同时覆盖多个封装、PCI 设备缺少 NUMA 归属、同一封装存在未能排除的重复传感器等情况，一律保持 N/A，绝不默认使用第一块芯片。对于已验证物理封装归属的 AMD hwmon，`Tccd1`、`Tccd2` 等标签分别映射到 `cpuN.ccd0.temperature`、`cpuN.ccd1.temperature`，并参与该封装的 `cpuN.temperature.max`；未能确定归属的 CCD 不提供虚假读数。无索引 `cpu.temperature` 取有效温度最高值、`cpu.power` 累加有效封装功耗。RAPL 能量计数器需要两个有效时间点；缺失、无法唯一绑定或读数无效时保持 N/A。当前 Linux 仅交叉编译（包括相关模拟用例的测试二进制），不宣称已完成多插槽 Linux 实机验证。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取；Intel 核显/Arc 通过 i915/xe 的设备级 hwmon 读取温度、能耗计数器并换算功率，能获得独立显存容量的 Arc 设备也提供 VRAM 指标。**多 GPU 设备以 DRM PCI 地址排序：Linux 也支持 `gpu0`、`gpu1`，NVIDIA 通过 PCI Bus ID 而非 NVML 索引选择，所有可用读数聚合为 `gpu.*`。** Intel GPU 的 `power1_max` 是功耗**上限**，不是当前功耗，不能作为采样结果；缺少 GPU 全局使用率计数器时不根据频率伪造负载。
+Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，AMD/Intel CPU 温度分别通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。**Linux 多封装 CPU 温度/功耗按真实封装 ID 匹配**：从 `/sys/devices/system/cpu/cpu*/topology/physical_package_id` 获取物理编号，Intel `coretemp` 的 `Package id N` 温度标签与 RAPL 顶层 `package-N` 能耗域映射为 `cpuN.temperature`、`cpuN.power`。AMD `k10temp` 的 Tctl 标签本身不包含物理封装编号，但当其 PCI 设备公开 NUMA 节点，且该节点 `cpulist` 中所有逻辑处理器都明确归属**同一个物理 CPU** 时，也可安全映射 `cpuN.temperature`。NUMA 节点同时覆盖多个封装、PCI 设备缺少 NUMA 归属、同一封装存在未能排除的重复传感器等情况，一律保持 N/A，绝不默认使用第一块芯片。对于已验证物理封装归属的 AMD hwmon，`Tccd1`、`Tccd2` 等标签分别映射到 `cpuN.ccd0.temperature`、`cpuN.ccd1.temperature`，并参与该封装的 `cpuN.temperature.max`；无法确定归属的 CCD 仍可通过 `cpu.ccd0.temperature` 等无索引指标查看真实读数，不擅自标为 `cpu0`。有多个可确认封装的有效读数时，无索引温度取最高值、功耗求和；没有封装级来源时，保留已有驱动的无索引读数，不强制转换为 N/A。RAPL 能量计数器需要两个有效时间点；缺失、无法唯一绑定或读数无效时保持 N/A。当前 Linux 仅交叉编译（包括相关模拟用例的测试二进制），不宣称已完成多插槽 Linux 实机验证。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取；Intel 核显/Arc 通过 i915/xe 的设备级 hwmon 读取温度、能耗计数器并换算功率，能获得独立显存容量的 Arc 设备也提供 VRAM 指标。**多 GPU 设备以 DRM PCI 地址排序：Linux 也支持 `gpu0`、`gpu1`，NVIDIA 通过 PCI Bus ID 而非 NVML 索引选择，所有可用读数聚合为 `gpu.*`。** Intel GPU 的 `power1_max` 是功耗**上限**，不是当前功耗，不能作为采样结果；缺少 GPU 全局使用率计数器时不根据频率伪造负载。
 
 systemd 服务直接复用 `run` 的热重载和停止信号处理。安装需要 root，且需预先准备有效 JSON（`device.pm` 不得为 0）：
 
@@ -326,7 +326,7 @@ macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/st
 
 ### 配置热重载与失败保护
 
-`run` 与 Windows SCM、Linux systemd、macOS launchd 的服务进程**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，须成功准备该平台的 GPU 采集器后才提交新配置。
+`run` 与 Windows SCM、Linux systemd、macOS launchd 的服务进程**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，即使硬件暂时不可用也允许合法配置生效，采集器继续自动重试。
 
 如果 JSON 不完整、某字段非法、文件被删除，则**拒绝本次重载，继续运行上一份有效配置**，并记录一条错误，不以默认配置覆盖现场值。**GPU 暂时不存在、驱动尚未加载或某个设备传感器不可用并不属于配置错误：允许启用该设置，显示 N/A，后台继续尝试重新连接。**编辑磁盘文件不会被程序自动回滚：请纠正 JSON 后再次保存。唯一明确不支持热切换的业务参数是 `device.pm`（硬件型号），修改时拒绝重载，需要停止并重启程序或服务。自定义配置文件路径只能在启动/安装时确定。
 

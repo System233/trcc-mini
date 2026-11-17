@@ -40,23 +40,33 @@ func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
 			}
 		}
 	}
-	if sensor == nil || physicalCPUCount() != 1 {
+	if sensor == nil {
 		return
 	}
+	singleSocket := physicalCPUCount() == 1
 	var maxTemp float64
 	if value, e := sensor.ReadTemp("tctl"); e == nil && value > 0 {
-		m.setExtra("cpu0.temperature", value)
+		if singleSocket {
+			m.setExtra("cpu0.temperature", value)
+		}
 		maxTemp = value
 	}
 	for i, source := range []string{"ccd1", "ccd2"} {
 		if value, e := sensor.ReadTemp(source); e == nil && value > 0 {
-			m.setExtra(indexedMetricName("cpu", 0, "ccd"+strconv.Itoa(i)+".temperature"), value)
+			suffix := "ccd" + strconv.Itoa(i) + ".temperature"
+			m.setExtra("cpu."+suffix, value)
+			if singleSocket {
+				m.setExtra(indexedMetricName("cpu", 0, suffix), value)
+			}
 			if value > maxTemp {
 				maxTemp = value
 			}
 		}
 	}
 	if maxTemp > 0 {
-		m.setExtra("cpu0.temperature.max", maxTemp)
+		m.setExtra("cpu.temperature.max", maxTemp)
+		if singleSocket {
+			m.setExtra("cpu0.temperature.max", maxTemp)
+		}
 	}
 }

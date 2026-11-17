@@ -167,9 +167,6 @@ func (a metricAcc) value(mode string) (float64, bool) {
 	if mode == "max" {
 		return a.max, true
 	}
-	if mode == "avg" {
-		return a.sum / float64(a.count), true
-	}
 	return a.sum, true
 }
 

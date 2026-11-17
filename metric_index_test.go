@@ -166,6 +166,54 @@ func TestExactPackagePowerNotOverwrittenByLegacyProbe(t *testing.T) {
 	}
 }
 
+func TestUnindexedCPUReadingsRemainAvailableOnMultiSocket(t *testing.T) {
+	// A driver may expose a real temperature or power reading without
+	// identifying which socket it came from. Preserve that raw reading
+	// without inventing a cpu0/cpu1 attribution.
+	m := metrics{Temp: 67, TempValid: true, CPUPower: 112, CPUPowerValid: true, Load: 35}
+	populateCPUIndexedWithCount(&m, 2)
+	for name, want := range map[string]float64{
+		"cpu.temperature": 67,
+		"cpu.power":       112,
+		"cpu.load":        35,
+	} {
+		got, ok := readMetric(m, name)
+		if !ok || got != want {
+			t.Fatalf("%s: got %.1f (valid=%v), want %.1f", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"cpu0.temperature", "cpu1.temperature", "cpu0.power", "cpu1.power"} {
+		if got, ok := readMetric(m, name); ok {
+			t.Fatalf("unattributed reading must not become %s = %.1f", name, got)
+		}
+	}
+
+	// When physical socket data exists, only aggregate those real values.
+	m = metrics{Temp: 67, TempValid: true, CPUPower: 112, CPUPowerValid: true}
+	m.setExtra("cpu1.temperature", 75)
+	m.setExtra("cpu1.power", 83)
+	populateCPUIndexedWithCount(&m, 2)
+	if got, ok := readMetric(m, "cpu.temperature"); !ok || got != 75 {
+		t.Fatalf("indexed temperature aggregate %.1f (valid=%v), want 75", got, ok)
+	}
+	// When a preferred temperature is absent, an available aggregate can
+	// still drive the legacy display instead of leaving its digits blank.
+	m.TempValid = false
+	populateCPUIndexedWithCount(&m, 2)
+	if !m.TempValid || m.Temp != 75 {
+		t.Fatalf("legacy temperature did not fall back to available reading: %.1f (valid=%v)", m.Temp, m.TempValid)
+	}
+	if got, ok := readMetric(m, "cpu.power"); !ok || got != 83 {
+		t.Fatalf("indexed watts aggregate %.1f (valid=%v), want 83", got, ok)
+	}
+	if !m.CPUPowerValid || m.CPUPower != 83 {
+		t.Fatalf("legacy renderer did not receive aggregate watts: %.1f (valid=%v)", m.CPUPower, m.CPUPowerValid)
+	}
+	if _, ok := readMetric(m, "cpu0.power"); ok {
+		t.Fatal("unread socket cpu0 must remain N/A")
+	}
+}
+
 func TestAggregateMemoryLoadUsesPairedValues(t *testing.T) {
 	var m metrics
 	m.setExtra("gpu0.memory.used", 2)

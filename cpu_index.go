@@ -3,11 +3,14 @@ package main
 
 import "strconv"
 
-// The current low-level CPU temperature and MSR readers do not target a
-// physical socket. Only assign them to cpu0 if the OS confirms there is
-// exactly one socket; a multi-socket value must never be mislabeled cpu0.
+// Always expose actual unindexed readings. A driver that cannot select a
+// particular socket must not label its reading cpu0/cpu1, but that does not
+// make the unindexed temperature or power reading unavailable.
 func populateCPUIndexed(m *metrics) {
-	count := physicalCPUCount()
+	populateCPUIndexedWithCount(m, physicalCPUCount())
+}
+
+func populateCPUIndexedWithCount(m *metrics, count int) {
 	if count == 1 {
 		// Do not assign an arbitrary CCD temperature to package Tctl.
 		// The indexed OS sampler supplies cpu0.load only after a valid
@@ -19,19 +22,20 @@ func populateCPUIndexed(m *metrics) {
 		}
 	}
 	if count > 0 {
-		if count > 1 {
-			// Current MSR/PawnIO sensor does not select the package on
-			// multi-socket machines; its reading has unknown provenance.
-			// Never present a random socket's watts or temperature as a
-			// comprehensive total.
-			m.TempValid = false
-			m.CPUPowerValid = false
-		}
-		// The OS-weighted total cpu.load remains available on all socket
-		// counts. Per-package load comes from actual per-thread deltas.
+		// If package-specific readings exist, they take precedence for the
+		// matching aggregate. With none, keep whatever unindexed telemetry
+		// the driver returned instead of turning valid data into N/A.
 		aggregateIndexedMetrics(m, map[string]int{"cpu": count})
-		// Unindexed temperature now reflects available physical package
-		// Tctl values (maximum), not the selected AMD CCD legacy source.
+		// Legacy render layouts use CPUPower directly instead of readMetric.
+		// Give them the same available aggregates as the configurable slots.
+		if !m.TempValid {
+			if temp, ok := m.Extras["cpu.temperature"]; ok && temp.Valid {
+				m.Temp, m.TempValid = temp.Value, true
+			}
+		}
+		if power, ok := m.Extras["cpu.power"]; ok && power.Valid {
+			m.CPUPower, m.CPUPowerValid = power.Value, true
+		}
 	}
 }
 

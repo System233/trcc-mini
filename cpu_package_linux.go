@@ -327,19 +327,3 @@ func (p *linuxPackageTelemetryIndex) Sample(m *metrics) {
 		}
 	}
 }
-
-func (p *linuxPackageTelemetryIndex) Coverage() string {
-	if p == nil {
-		return "unavailable"
-	}
-	temp, power := 0, 0
-	for _, d := range p.devices {
-		if d.tempPath != "" {
-			temp++
-		}
-		if d.power.energy != "" {
-			power++
-		}
-	}
-	return fmt.Sprintf("packages=%d, temperature=%d, RAPL=%d", p.packages, temp, power)
-}

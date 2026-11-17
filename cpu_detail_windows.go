@@ -7,6 +7,7 @@ package main
 
 import (
 	"math"
+	"strconv"
 	"syscall"
 	"unsafe"
 )
@@ -77,21 +78,28 @@ func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
 			}
 		}
 	}
-	if sensor == nil || physicalCPUCount() != 1 {
+	if sensor == nil {
 		return
 	}
+	singleSocket := physicalCPUCount() == 1
 	var temperatures []float64
-	// cpu0.temperature always denotes package control temperature, not
-	// whichever CCD source was selected for the legacy cpu.temperature.
+	// A package temperature can be published under cpu0 only when there is
+	// one socket. Still expose the readable generic sensor on other hosts.
 	if value, e := sensor.ReadTemp("tctl"); e == nil && value > 0 {
-		m.setExtra("cpu0.temperature", value)
+		if singleSocket {
+			m.setExtra("cpu0.temperature", value)
+		}
 		temperatures = append(temperatures, value)
 	}
-	// Intel MSR readers refuse CCD reads; AMD chips expose CCD1, CCD2
-	// through their existing signed module. The new index is zero-based.
+	// CCDs remain readable without socket attribution: cpu.ccdN holds an
+	// actual sensor value, cpu0.ccdN is used only for a single socket.
 	for i, legacy := range []string{"ccd1", "ccd2"} {
 		if value, e := sensor.ReadTemp(legacy); e == nil && value > 0 {
-			m.setExtra(indexedMetricName("cpu", 0, "ccd"+string(rune('0'+i))+".temperature"), value)
+			suffix := "ccd" + strconv.Itoa(i) + ".temperature"
+			m.setExtra("cpu."+suffix, value)
+			if singleSocket {
+				m.setExtra(indexedMetricName("cpu", 0, suffix), value)
+			}
 			temperatures = append(temperatures, value)
 		}
 	}
@@ -102,6 +110,9 @@ func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
 				peak = v
 			}
 		}
-		m.setExtra("cpu0.temperature.max", peak)
+		m.setExtra("cpu.temperature.max", peak)
+		if singleSocket {
+			m.setExtra("cpu0.temperature.max", peak)
+		}
 	}
 }
