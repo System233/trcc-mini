@@ -431,6 +431,9 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 		}
 		m := metrics{Load: cpu.Sample()}
 		cpuDetails.Sample(&m)
+		if sample, ok := m.Extras["cpu.load"]; ok && sample.Valid {
+			m.Load = int(sample.Value + 0.5)
+		}
 		if pawn != nil {
 			if t, e := pawn.ReadTemp(config.Sensors.CPUTemperature); e == nil {
 				m.Temp = t

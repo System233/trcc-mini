@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Per-logical-processor CPU times from Windows NT processor counters, joined
 // to physical socket topology reported by GetLogicalProcessorInformationEx.
-// Only one-processor-group topologies are sampled until group-wide counter
-// ordering is explicitly verified. No guessed package ownership.
+// NtQuerySystemInformationEx reads group-local CPU counters; package masks
+// are flattened as group*64+processor only after all active groups validate.
+// Unknown or incomplete topology is N/A, never a guessed socket identity.
 package main
 
 import (
@@ -29,14 +30,16 @@ type cpuTimes struct {
 	Padding        uint32
 }
 type windowsCPUDetailSampler struct {
-	packages [][]int
-	prev     []cpuTimes
-	primed   bool
+	packages    [][]int
+	groupCounts []int
+	prev        []cpuTimes
+	primed      bool
 }
 
 type cpuDetailSampler = windowsCPUDetailSampler
 
 var ntQueryCPUPerformance = syscall.NewLazyDLL("ntdll.dll").NewProc("NtQuerySystemInformation")
+var ntQueryCPUPerformanceEx = syscall.NewLazyDLL("ntdll.dll").NewProc("NtQuerySystemInformationEx")
 var getProcessorGroupCount = syscall.NewLazyDLL("kernel32.dll").NewProc("GetActiveProcessorGroupCount")
 
 func readPackageTopologyBuffer() ([]byte, error) {
@@ -82,20 +85,18 @@ func parseWindowsCPUPackages(data []byte) ([][]int, error) {
 				addr := off + 32 + i*16
 				mask := binary.LittleEndian.Uint64(data[addr:])
 				group := binary.LittleEndian.Uint16(data[addr+8:])
-				// Group 0 is the only group understood by the native
-				// counter API's flat array. Never flatten group 1 as
-				// though it were more CPUs in group 0.
-				if group != 0 {
-					return nil, errors.New("multi-group topology requires group-aware counters")
+				if group >= 64 {
+					return nil, errors.New("unsupported processor group index")
 				}
 				for mask != 0 {
 					bit := bits.TrailingZeros64(mask)
-					mask &^= 1 << bit
-					if used[bit] {
+					mask &= mask - 1
+					id := int(group)*64 + bit
+					if used[id] {
 						return nil, errors.New("logical CPU belongs to multiple sockets")
 					}
-					used[bit] = true
-					ids = append(ids, bit)
+					used[id] = true
+					ids = append(ids, id)
 				}
 			}
 			if len(ids) == 0 {
@@ -134,6 +135,85 @@ func readWindowsPerCPUTimes(count int) ([]cpuTimes, bool) {
 	return times, true
 }
 
+// Multi-group counterpart of readWindowsPerCPUTimes. The Windows NT Ex API
+// accepts a USHORT processor-group index and returns the active processors
+// of that group in local processor order. Keep a fixed 64-slot stride so a
+// package spanning group 0 and group 1 cannot alias two processor numbers.
+func readWindowsGroupedTimes(groupCounts []int) ([]cpuTimes, bool) {
+	if len(groupCounts) < 1 || len(groupCounts) > 64 {
+		return nil, false
+	}
+	if len(groupCounts) == 1 {
+		return readWindowsPerCPUTimes(groupCounts[0])
+	}
+	result := make([]cpuTimes, len(groupCounts)*64)
+	for group, count := range groupCounts {
+		samples, valid := readWindowsCPUGroupWithEx(uint16(group), count)
+		if !valid {
+			return nil, false
+		}
+		copy(result[group*64:group*64+count], samples)
+	}
+	return result, true
+}
+
+func readWindowsCPUGroupWithEx(group uint16, count int) ([]cpuTimes, bool) {
+	if count < 1 || count > 64 {
+		return nil, false
+	}
+	if err := ntQueryCPUPerformanceEx.Find(); err != nil {
+		return nil, false
+	}
+	samples := make([]cpuTimes, count)
+	var returned uint32
+	size := uint32(unsafe.Sizeof(cpuTimes{}))
+	status, _, _ := ntQueryCPUPerformanceEx.Call(
+		processorPerfInfoClass,
+		uintptr(unsafe.Pointer(&group)), unsafe.Sizeof(group),
+		uintptr(unsafe.Pointer(&samples[0])), uintptr(count)*uintptr(size),
+		uintptr(unsafe.Pointer(&returned)))
+	if int32(status) != 0 || returned != uint32(count)*size {
+		return nil, false
+	}
+	return samples, true
+}
+
+// Processor-group flattening can be used only when every active processor
+// is represented once by exactly one physical package. This is deliberately
+// stricter than trusting the count of packages alone.
+func validWindowsPackageGroups(packages [][]int, groupCounts []int) bool {
+	if len(packages) == 0 || len(packages) > 64 || len(groupCounts) == 0 || len(groupCounts) > 64 {
+		return false
+	}
+	seen := make([]bool, len(groupCounts)*64)
+	for _, pkg := range packages {
+		if len(pkg) == 0 {
+			return false
+		}
+		for _, id := range pkg {
+			if id < 0 || id >= len(seen) || seen[id] {
+				return false
+			}
+			group, local := id/64, id%64
+			if groupCounts[group] < 1 || groupCounts[group] > 64 || local >= groupCounts[group] {
+				return false
+			}
+			seen[id] = true
+		}
+	}
+	for g, count := range groupCounts {
+		if count < 1 || count > 64 {
+			return false
+		}
+		for i := 0; i < count; i++ {
+			if !seen[g*64+i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func cpuTimesDelta(previous, current cpuTimes) (busy, total uint64, ok bool) {
 	// KernelTime includes idle time on Windows. All three values are
 	// cumulative 100ns intervals. Treat resets and zero deltas as N/A.
@@ -159,7 +239,7 @@ func (s *windowsCPUDetailSampler) ensureTopology() bool {
 		return true
 	}
 	groups, _, _ := getProcessorGroupCount.Call()
-	if groups != 1 {
+	if groups < 1 || groups > 64 {
 		return false
 	}
 	data, e := readPackageTopologyBuffer()
@@ -170,36 +250,33 @@ func (s *windowsCPUDetailSampler) ensureTopology() bool {
 	if e != nil {
 		return false
 	}
-	if len(packages) > 64 {
-		return false
-	}
-	maxCPU := -1
-	for _, ids := range packages {
-		for _, id := range ids {
-			if id > maxCPU {
-				maxCPU = id
-			}
+	counts := make([]int, int(groups))
+	for group := range counts {
+		active, _, _ := winCPUCountAPI.Call(uintptr(group))
+		if active == 0 || active > 64 {
+			return false
 		}
+		counts[group] = int(active)
 	}
-	if maxCPU < 0 || maxCPU >= 64 {
-		return false
-	}
-	count, _, _ := winCPUCountAPI.Call(0)
-	if count == 0 || count > 64 || int(count) != maxCPU+1 {
-		return false
-	}
-	total := 0
-	for _, ids := range packages {
-		total += len(ids)
-	}
-	if total != int(count) {
+	if !validWindowsPackageGroups(packages, counts) {
 		return false
 	}
 	s.packages = packages
+	s.groupCounts = counts
 	return true
 }
 
 func (s *windowsCPUDetailSampler) Sample(m *metrics) {
+	groups, _, _ := getProcessorGroupCount.Call()
+	if groups > 1 {
+		// GetSystemTimes and legacy NtQuerySystemInformation may cover only
+		// the calling processor group. Hide that partial percentage until
+		// the Ex query has supplied a complete cross-group sample.
+		if m.Extras == nil {
+			m.Extras = make(map[string]sampleValue)
+		}
+		m.Extras["cpu.load"] = sampleValue{}
+	}
 	if !s.ensureTopology() {
 		return
 	}
@@ -207,64 +284,70 @@ func (s *windowsCPUDetailSampler) Sample(m *metrics) {
 	for _, pkg := range s.packages {
 		logicalCount += len(pkg)
 	}
-	if logicalCount < 1 || logicalCount > 64 {
+	if logicalCount < 1 || logicalCount > 4096 {
 		return
 	}
 
 	// Retrieve OS power information once and assign frequencies by its
 	// reported processor Number, rather than by array position.
-	clocks := make([]processorPowerInfo, logicalCount)
-	rc, _, _ := winCPUClockAPI.Call(11, 0, 0, uintptr(unsafe.Pointer(&clocks[0])),
-		uintptr(len(clocks))*unsafe.Sizeof(clocks[0]))
-	if rc == 0 {
-		byLogical := make(map[int]float64, len(clocks))
-		seen := map[int]bool{}
-		for _, p := range clocks {
-			i := int(p.Number)
-			if i < 0 || i >= logicalCount {
-				continue
-			}
-			if seen[i] {
-				delete(byLogical, i)
-				continue
-			}
-			seen[i] = true
-			if p.CurrentMhz > 0 && p.CurrentMhz < 15000 {
-				byLogical[i] = float64(p.CurrentMhz)
-			}
-		}
-		allSum, allCount, allMax := 0.0, 0, 0.0
-		for socket, ids := range s.packages {
-			sum, n, max := 0.0, 0, 0.0
-			for logicalIndex, id := range ids {
-				value, ok := byLogical[id]
-				if !ok {
+	// CallNtPowerInformation can return a flat array, but its processor
+	// numbering across groups is not documented to match group*64+bit.
+	// Until that relation is established, leave multi-group per-core
+	// clocks as N/A rather than bind a different group's CPU frequency.
+	if len(s.groupCounts) == 1 {
+		clocks := make([]processorPowerInfo, logicalCount)
+		rc, _, _ := winCPUClockAPI.Call(11, 0, 0, uintptr(unsafe.Pointer(&clocks[0])),
+			uintptr(len(clocks))*unsafe.Sizeof(clocks[0]))
+		if rc == 0 {
+			byLogical := make(map[int]float64, len(clocks))
+			seen := map[int]bool{}
+			for _, p := range clocks {
+				i := int(p.Number)
+				if i < 0 || i >= logicalCount {
 					continue
 				}
-				m.setExtra(indexedMetricName("cpu", socket, coreSuffix(logicalIndex, "clock")), value)
-				sum += value
-				n++
-				if value > max {
-					max = value
+				if seen[i] {
+					delete(byLogical, i)
+					continue
+				}
+				seen[i] = true
+				if p.CurrentMhz > 0 && p.CurrentMhz < 15000 {
+					byLogical[i] = float64(p.CurrentMhz)
 				}
 			}
-			if n > 0 {
-				m.setExtra(indexedMetricName("cpu", socket, "clock"), sum/float64(n))
-				m.setExtra(indexedMetricName("cpu", socket, "clock.max"), max)
-				allSum += sum
-				allCount += n
-				if max > allMax {
-					allMax = max
+			allSum, allCount, allMax := 0.0, 0, 0.0
+			for socket, ids := range s.packages {
+				sum, n, max := 0.0, 0, 0.0
+				for logicalIndex, id := range ids {
+					value, ok := byLogical[id]
+					if !ok {
+						continue
+					}
+					m.setExtra(indexedMetricName("cpu", socket, coreSuffix(logicalIndex, "clock")), value)
+					sum += value
+					n++
+					if value > max {
+						max = value
+					}
+				}
+				if n > 0 {
+					m.setExtra(indexedMetricName("cpu", socket, "clock"), sum/float64(n))
+					m.setExtra(indexedMetricName("cpu", socket, "clock.max"), max)
+					allSum += sum
+					allCount += n
+					if max > allMax {
+						allMax = max
+					}
 				}
 			}
-		}
-		if allCount > 0 {
-			m.setExtra("cpu.clock", allSum/float64(allCount))
-			m.setExtra("cpu.clock.max", allMax)
+			if allCount > 0 {
+				m.setExtra("cpu.clock", allSum/float64(allCount))
+				m.setExtra("cpu.clock.max", allMax)
+			}
 		}
 	}
 
-	times, ok := readWindowsPerCPUTimes(logicalCount)
+	times, ok := readWindowsGroupedTimes(s.groupCounts)
 	if !ok {
 		return
 	}
@@ -279,6 +362,11 @@ func (s *windowsCPUDetailSampler) Sample(m *metrics) {
 
 // Weighted per-socket load, omitting invalid/missing logical CPUs.
 func populateWindowsCPUUsage(m *metrics, packages [][]int, previous, current []cpuTimes) {
+	if m.Extras == nil {
+		m.Extras = make(map[string]sampleValue)
+	}
+	m.Extras["cpu.load"] = sampleValue{} // all invalid -> N/A, not legacy zero
+	var allBusy, allTotal uint64
 	for socket, ids := range packages {
 		var busySum, totalSum uint64
 		for logicalIndex, id := range ids {
@@ -297,7 +385,14 @@ func populateWindowsCPUUsage(m *metrics, packages [][]int, previous, current []c
 		if totalSum > 0 {
 			m.setExtra(indexedMetricName("cpu", socket, "load"),
 				100*float64(busySum)/float64(totalSum))
+			allBusy += busySum
+			allTotal += totalSum
 		}
+	}
+	// No maximum/mean of per-socket percentages: use actual elapsed time
+	// from every valid logical CPU across all processor groups.
+	if allTotal > 0 {
+		m.setExtra("cpu.load", 100*float64(allBusy)/float64(allTotal))
 	}
 }
 

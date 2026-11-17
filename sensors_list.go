@@ -37,6 +37,9 @@ func enumerateSensorReadings() (sensorListing, error) {
 	time.Sleep(250 * time.Millisecond)
 	snapshot.Load = cpu.Sample()
 	cpuDetails.Sample(&snapshot)
+	if sample, ok := snapshot.Extras["cpu.load"]; ok && sample.Valid {
+		snapshot.Load = int(math.Round(sample.Value))
+	}
 	if sensor, e := openCPUSensor(); e == nil {
 		if value, e := sensor.ReadTemp("tctl"); e == nil {
 			snapshot.Temp, snapshot.TempValid = value, true

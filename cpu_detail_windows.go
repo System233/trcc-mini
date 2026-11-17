@@ -58,15 +58,22 @@ func currentWindowsCPUClocks() (avg, max float64, valid bool) {
 // indexed names are legitimate config values but stay N/A without a provider.
 func populatePlatformCPUMetrics(m *metrics, sensor cpuTelemetry) {
 	if _, clockPresent := m.Extras["cpu.clock"]; !clockPresent {
-		// OS fallback when grouped core clocks are not available. Avoid
-		// making a second power-information query on every 200ms frame.
-		avg, max, ok := currentWindowsCPUClocks()
-		if ok {
-			m.setExtra("cpu.clock", avg)
-			m.setExtra("cpu.clock.max", max)
-			if physicalCPUCount() == 1 {
-				m.setExtra("cpu0.clock", avg)
-				m.setExtra("cpu0.clock.max", max)
+		groups, _, _ := getProcessorGroupCount.Call()
+		if groups != 1 {
+			// CallNtPowerInformation lacks a documented group-indexed
+			// result mapping. Do not present a partial group's frequency
+			// as the multi-group machine's aggregate.
+		} else {
+			// OS fallback when grouped core clocks are not available. Avoid
+			// making a second power-information query on every 200ms frame.
+			avg, max, ok := currentWindowsCPUClocks()
+			if ok {
+				m.setExtra("cpu.clock", avg)
+				m.setExtra("cpu.clock.max", max)
+				if physicalCPUCount() == 1 {
+					m.setExtra("cpu0.clock", avg)
+					m.setExtra("cpu0.clock.max", max)
+				}
 			}
 		}
 	}

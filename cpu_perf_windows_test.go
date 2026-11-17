@@ -20,6 +20,24 @@ func fakeWindowsSocketRecord(mask uint64, group uint16) []byte {
 	binary.LittleEndian.PutUint16(b[40:42], group)
 	return b
 }
+
+type syntheticProcessorMask struct {
+	mask  uint64
+	group uint16
+}
+
+func fakeWindowsMultiGroupSocket(masks ...syntheticProcessorMask) []byte {
+	b := make([]byte, 32+16*len(masks))
+	binary.LittleEndian.PutUint32(b[0:4], 3)
+	binary.LittleEndian.PutUint32(b[4:8], uint32(len(b)))
+	binary.LittleEndian.PutUint16(b[30:32], uint16(len(masks)))
+	for i, item := range masks {
+		offset := 32 + i*16
+		binary.LittleEndian.PutUint64(b[offset:offset+8], item.mask)
+		binary.LittleEndian.PutUint16(b[offset+8:offset+10], item.group)
+	}
+	return b
+}
 func TestWindowsCPUTopologyPackageMasks(t *testing.T) {
 	raw := append(fakeWindowsSocketRecord(0b00001111, 0), fakeWindowsSocketRecord(0b11110000, 0)...)
 	packages, err := parseWindowsCPUPackages(raw)
@@ -33,8 +51,14 @@ func TestWindowsCPUTopologyPackageMasks(t *testing.T) {
 	if _, err := parseWindowsCPUPackages(append(fakeWindowsSocketRecord(3, 0), fakeWindowsSocketRecord(2, 0)...)); err == nil {
 		t.Fatal("overlapping physical package masks must be rejected")
 	}
-	if _, err := parseWindowsCPUPackages(fakeWindowsSocketRecord(3, 1)); err == nil {
-		t.Fatal("processor group 1 cannot be mapped to group 0")
+	if packages, err := parseWindowsCPUPackages(fakeWindowsSocketRecord(3, 1)); err != nil || len(packages) != 1 || packages[0][0] != 64 || packages[0][1] != 65 {
+		t.Fatalf("group 1 must map to distinct processor keys 64/65: %v, %v", packages, err)
+	}
+	if _, err := parseWindowsCPUPackages(fakeWindowsSocketRecord(1, 64)); err == nil {
+		t.Fatal("out-of-range group must be rejected")
+	}
+	if _, err := parseWindowsCPUPackages(append(fakeWindowsSocketRecord(1, 0), fakeWindowsSocketRecord(1, 1)...)); err != nil {
+		t.Errorf("same bit number in separate groups must not overlap: %v", err)
 	}
 	if _, err := parseWindowsCPUPackages(fakeWindowsSocketRecord(0, 0)); err == nil {
 		t.Fatal("package with no logical processors must be rejected")
@@ -43,6 +67,57 @@ func TestWindowsCPUTopologyPackageMasks(t *testing.T) {
 	binary.LittleEndian.PutUint32(bad[4:8], 4096)
 	if _, err := parseWindowsCPUPackages(bad); err == nil {
 		t.Fatal("out-of-bounds processor record accepted")
+	}
+}
+
+func TestWindowsCrossGroupPackageTopology(t *testing.T) {
+	// CPU0 spans two processor groups. CPU1 stays within group 1.
+	data := append(fakeWindowsMultiGroupSocket(
+		syntheticProcessorMask{mask: 0b11, group: 0},
+		syntheticProcessorMask{mask: 0b11, group: 1}),
+		fakeWindowsSocketRecord(0b1100, 1)...)
+	packages, e := parseWindowsCPUPackages(data)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(packages) != 2 || len(packages[0]) != 4 || len(packages[1]) != 2 ||
+		packages[0][0] != 0 || packages[0][2] != 64 || packages[1][0] != 66 {
+		t.Fatalf("failed to map cross-group socket: %+v", packages)
+	}
+	if !validWindowsPackageGroups(packages, []int{2, 4}) {
+		t.Fatal("complete two-group topology falsely rejected")
+	}
+	for _, counts := range [][]int{{2, 3}, {2, 5}, {4, 4}, {2, 0}} {
+		if validWindowsPackageGroups(packages, counts) {
+			t.Errorf("mismatched active group counts %v accepted", counts)
+		}
+	}
+	if validWindowsPackageGroups([][]int{{0, 1}, {1, 64, 65, 66, 67}}, []int{2, 4}) {
+		t.Fatal("duplicate logical CPU across packages accepted")
+	}
+	// Use a group*64-strided counter array, as returned by the Ex API.
+	prev, current := make([]cpuTimes, 128), make([]cpuTimes, 128)
+	for _, id := range packages[0] {
+		prev[id] = cpuTimes{Kernel: 100, Idle: 50}
+		current[id] = cpuTimes{Kernel: 200, Idle: 75} // 75% busy
+	}
+	for _, id := range packages[1] {
+		prev[id] = cpuTimes{Kernel: 100, Idle: 50}
+		current[id] = cpuTimes{Kernel: 200, Idle: 125} // 25% busy
+	}
+	var m metrics
+	populateWindowsCPUUsage(&m, packages, prev, current)
+	for key, expected := range map[string]float64{
+		"cpu0.load":       75,
+		"cpu1.load":       25,
+		"cpu.load":        350.0 / 6, // 4*75% + 2*25% over six logical CPUs
+		"cpu0.core2.load": 75,
+		"cpu1.core0.load": 25,
+	} {
+		value, valid := readMetric(m, key)
+		if !valid || math.Abs(value-expected) > 1e-5 {
+			t.Errorf("%s got %.4f valid=%v want %.4f", key, value, valid, expected)
+		}
 	}
 }
 func TestWindowsPerCPUCounterMath(t *testing.T) {
@@ -95,7 +170,7 @@ func TestWindowsMultiSocketWeightedLoadAndNA(t *testing.T) {
 	}
 	m = metrics{}
 	populateWindowsCPUUsage(&m, packages, prev, prev)
-	for _, name := range []string{"cpu0.load", "cpu1.load", "cpu0.core0.load"} {
+	for _, name := range []string{"cpu.load", "cpu0.load", "cpu1.load", "cpu0.core0.load"} {
 		if _, ok := readMetric(m, name); ok {
 			t.Errorf("%s expected N/A on all-invalid deltas", name)
 		}
@@ -149,4 +224,24 @@ func TestWindowsNativePerCoreSampler(t *testing.T) {
 	}
 	t.Logf("sockets=%d logical processors=%d valid per-core samples=%d clock0=%v",
 		len(sampler.packages), n, valid, m.Extras["cpu0.core0.clock"])
+}
+
+func TestWindowsNativeExGroupZeroABI(t *testing.T) {
+	count, _, _ := winCPUCountAPI.Call(0)
+	if count < 1 || count > 64 {
+		t.Skipf("unsupported Windows group size: %d", count)
+	}
+	samples, ok := readWindowsCPUGroupWithEx(0, int(count))
+	if !ok {
+		t.Skip("NtQuerySystemInformationEx processor-group performance query unavailable")
+	}
+	if len(samples) != int(count) {
+		t.Fatalf("group0 returned %d entries, wanted %d", len(samples), count)
+	}
+	for i, sample := range samples {
+		if sample.Kernel <= 0 || sample.User < 0 || sample.Idle < 0 {
+			t.Fatalf("group0 processor%d returned invalid time counters: %+v", i, sample)
+		}
+	}
+	t.Logf("native group0 NtQuerySystemInformationEx returned %d valid counters", len(samples))
 }
