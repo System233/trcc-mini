@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 func TestAppConfigLifecycle(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "subdir", "trcc-mini.json")
 	cfg, err := readAppConfig(p)
-	if err != nil || cfg.Version != 2 || !cfg.Sensors.GPU || len(cfg.Display.Slots) != 4 || len(cfg.Display.Slots[cpuPrimary].Metrics) != 2 {
+	if err != nil || cfg.Version != 3 || !cfg.Sensors.GPU || len(cfg.Display.Slots) != 4 || len(cfg.Display.Slots[cpuPrimary].Metrics) != 2 {
 		t.Fatalf("built-in defaults missing: %+v %v", cfg, err)
 	}
 	if err = createAppConfig(p); err != nil {
@@ -32,10 +33,75 @@ func TestAppConfigLifecycle(t *testing.T) {
 	}
 }
 
+func TestMetricConfigFileRoundtrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "metrics.json")
+	c := defaultAppConfig()
+	c.Indicators = map[string]indicatorConfig{
+		"gpu.power": {Symbols: []string{"C", "F"}, Color: &colorRule{
+			Mode: "threshold", Stops: []colorStop{
+				{At: 0, Color: "#00FF00"}, {At: 100, Color: "#FFA500"}, {At: 200, Color: "#FF0000"},
+			}}},
+		"cpu.temperature": {Symbols: []string{}, Unit: "F"},
+	}
+	c.Derived = map[string]derivedConfig{
+		"system.power.estimated": {Operation: "sum", Sources: []string{"cpu.power", "gpu.power"}, Offset: 25},
+	}
+	c.Display.Slots[gpuPrimary] = slotConfig{Metrics: []string{"gpu.power"}}
+	c.Display.Slots[cpuPrimary] = slotConfig{Metrics: []string{"cpu.temperature", "system.power.estimated"}, Interval: "4s"}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(p, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readAppConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Indicators["gpu.power"].Symbols[0] != "C" || loaded.Indicators["gpu.power"].Color.Stops[1].At != 100 {
+		t.Fatalf("power color/symbol config lost: %+v", loaded.Indicators["gpu.power"])
+	}
+	if got := loaded.Indicators["cpu.temperature"].Symbols; got == nil || len(got) != 0 {
+		t.Fatalf("explicitly blank symbols must survive JSON roundtrip: %#v", got)
+	}
+	if loaded.Derived["system.power.estimated"].Offset != 25 {
+		t.Fatal("derived estimate offset lost")
+	}
+	if loaded.Display.Slots[cpuPrimary].Metrics[1] != "system.power.estimated" {
+		t.Fatal("derived slot reference lost")
+	}
+	if loaded.Version != 3 {
+		t.Fatal("wrong schema version")
+	}
+}
+
+func TestMetricConfigValidationFromJSON(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "invalid.json")
+	for _, extra := range []string{
+		`"indicators":{"gpu.power":{"color":{"mode":"gradient","stops":[{"at":100,"color":"#FFFFFF"}]}}}`,
+		`"indicators":{"gpu.power":{"symbols":["W"]}}`,
+		`"indicators":{"gpu.power":{"unit":"GiB"}}`,
+		`"indicators":{"cpu.temperature":{"unit":"Kelvin"}}`,
+		`"indicators":{"cpu.power":{"color":{}}}`,
+		`"indicators":{"unknown.key":{"color":{"mode":"solid","value":"#FFFFFF"}}}`,
+		`"derived":{"system.power.estimated":{"operation":"sum","sources":["cpu.temperature","gpu.power"]}}`,
+	} {
+		b := []byte(`{"version":3,` + extra + `}`)
+		if err := os.WriteFile(p, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readAppConfig(p); err == nil {
+			t.Errorf("accepted invalid JSON indicators/derived: %s", b)
+		}
+	}
+}
+
 func TestAppConfigStrictValidation(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "test.json")
 	for _, v := range []string{
 		`{"version":999}`,
+		`{"version":2}`,
 		`{"version":1,"display":{"power":"rotate"}}`,
 		`{"version":1,"unknown":1}`,
 		`{"version":2,"display":{"brightness":150}}`,
@@ -59,7 +125,7 @@ func TestAppConfigStrictValidation(t *testing.T) {
 		}
 	}
 	// A partial config inherits supported defaults, including the GPU row.
-	if err := os.WriteFile(p, []byte(`{"version":2,"sensors":{"cpuTemperature":"ccd-max"},"display":{"slots":{"cpu.primary":{"metrics":["cpu.power"]}}}}`), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(`{"version":3,"sensors":{"cpuTemperature":"ccd-max"},"display":{"slots":{"cpu.primary":{"metrics":["cpu.power"]}}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := readAppConfig(p)

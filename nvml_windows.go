@@ -11,14 +11,16 @@ import (
 )
 
 type nvmlSensor struct {
-	dll      *syscall.DLL
-	device   uintptr
-	shutdown *syscall.Proc
-	getTemp  *syscall.Proc
-	getLoad  *syscall.Proc
-	getPower *syscall.Proc
+	dll       *syscall.DLL
+	device    uintptr
+	shutdown  *syscall.Proc
+	getTemp   *syscall.Proc
+	getLoad   *syscall.Proc
+	getPower  *syscall.Proc
+	getMemory *syscall.Proc
 }
 type nvmlUtil struct{ GPU, Memory uint32 }
+type nvmlMemory struct{ Total, Free, Used uint64 }
 
 func openNVML() (*nvmlSensor, error) {
 	dll, err := syscall.LoadDLL("nvml.dll")
@@ -50,6 +52,9 @@ func openNVML() (*nvmlSensor, error) {
 	if err != nil {
 		return cleanup(err)
 	}
+	// Optional: older NVIDIA drivers may not export memory telemetry.
+	// In that case GPU temperature and power must continue working.
+	memory, _ := dll.FindProc("nvmlDeviceGetMemoryInfo")
 	ok, _, _ := init.Call()
 	if ok != 0 {
 		return cleanup(fmt.Errorf("NVML init returned %d", ok))
@@ -60,7 +65,19 @@ func openNVML() (*nvmlSensor, error) {
 		shutdown.Call()
 		return cleanup(fmt.Errorf("NVML GPU[0] unavailable: code %d", ok))
 	}
-	return &nvmlSensor{dll: dll, device: device, shutdown: shutdown, getTemp: temp, getLoad: load, getPower: power}, nil
+	return &nvmlSensor{dll: dll, device: device, shutdown: shutdown, getTemp: temp, getLoad: load, getPower: power, getMemory: memory}, nil
+}
+func (n *nvmlSensor) ReadMemory() (usedGiB, totalGiB, percent float64, valid bool) {
+	if n == nil || n.getMemory == nil {
+		return
+	}
+	var mem nvmlMemory
+	code, _, _ := n.getMemory.Call(n.device, uintptr(unsafe.Pointer(&mem)))
+	if code != 0 || mem.Total == 0 || mem.Used > mem.Total {
+		return
+	}
+	const gib = 1024 * 1024 * 1024
+	return float64(mem.Used) / gib, float64(mem.Total) / gib, 100 * float64(mem.Used) / float64(mem.Total), true
 }
 func (n *nvmlSensor) Read() (temp float64, tempValid bool, load int, loadValid bool) {
 	if n == nil {

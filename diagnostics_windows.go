@@ -50,6 +50,17 @@ func sensorDiagnostics() error {
 		} else {
 			fmt.Println("  GPU power:  N/A")
 		}
+		used, total, percent, ok := gpu.ReadMemory()
+		if ok {
+			fmt.Printf("  GPU VRAM:   %.1f / %.1f GiB (%.1f%%)\n", used, total, percent)
+		} else {
+			fmt.Println("  GPU VRAM:   N/A (NVML memory information not available)")
+		}
+	}
+	if used, total, percent, ok := readSystemMemory(); ok {
+		fmt.Printf("System RAM:    %.1f / %.1f GiB (%.1f%%)\n", used, total, percent)
+	} else {
+		fmt.Println("System RAM:    N/A")
 	}
 	if pawn != nil {
 		time.Sleep(500 * time.Millisecond)

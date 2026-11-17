@@ -33,16 +33,11 @@ func defaultDisplaySlots() map[string]slotConfig {
 	}
 }
 
-func validMetric(metric string) bool {
-	switch metric {
-	case "cpu.temperature", "cpu.load", "cpu.power", "gpu.temperature", "gpu.load", "gpu.power":
-		return true
-	default:
-		return false
+func validateDisplaySlots(slots map[string]slotConfig, derived ...map[string]derivedConfig) error {
+	var derivedMetrics map[string]derivedConfig
+	if len(derived) > 0 {
+		derivedMetrics = derived[0]
 	}
-}
-
-func validateDisplaySlots(slots map[string]slotConfig) error {
 	if len(slots) != len(slotNames) {
 		return fmt.Errorf("display.slots must define exactly four PA120 slots: %s", strings.Join(slotNames[:], ", "))
 	}
@@ -62,8 +57,8 @@ func validateDisplaySlots(slots map[string]slotConfig) error {
 		}
 		seen := make(map[string]bool)
 		for _, metric := range slot.Metrics {
-			if !validMetric(metric) {
-				return fmt.Errorf("display.slots.%s: unknown metric %q (cpu/gpu .temperature/.load/.power)", name, metric)
+			if !supportedMetric(metric, derivedMetrics) {
+				return fmt.Errorf("display.slots.%s: unknown metric %q", name, metric)
 			}
 			if seen[metric] {
 				return fmt.Errorf("display.slots.%s: duplicate metric %q", name, metric)
@@ -86,28 +81,37 @@ func validateDisplaySlots(slots map[string]slotConfig) error {
 // A slotSelection is the particular valid value chosen for a physical region.
 // The physical label/icons are chosen from the metric kind, not the region.
 type slotSelection struct {
-	Metric string
-	Value  float64
-	Valid  bool
+	Metric  string
+	Value   float64
+	Valid   bool
+	Symbols []string
+	Unit    string
 }
 
 func (s slotSelection) String() string {
 	if !s.Valid {
 		return "N/A"
 	}
-	suffix := ""
-	switch metricKind(s.Metric) {
-	case "temperature":
-		suffix = "°C"
-	case "load":
+	suffix := s.Unit
+	if suffix == "" {
+		suffix = builtinUnits[s.Metric]
+	}
+	if suffix == "percent" {
 		suffix = "%"
-	case "power":
-		suffix = "W"
+	}
+	if suffix == "C" || suffix == "F" {
+		suffix = "°" + suffix
+	}
+	if len(s.Symbols) > 0 {
+		return fmt.Sprintf("%s=%.1f%s [LED:%s]", s.Metric, s.Value, suffix, strings.Join(s.Symbols, "+"))
 	}
 	return fmt.Sprintf("%s=%.1f%s", s.Metric, s.Value, suffix)
 }
 
 func metricKind(metric string) string {
+	if strings.HasSuffix(metric, ".estimated") {
+		return "power"
+	}
 	if i := strings.IndexByte(metric, '.'); i >= 0 {
 		return metric[i+1:]
 	}
@@ -129,7 +133,8 @@ func readMetric(m metrics, name string) (float64, bool) {
 	case "gpu.power":
 		return m.GPUPower, m.GPUPowerValid
 	default:
-		return 0, false
+		s, ok := m.Extras[name]
+		return s.Value, ok && s.Valid
 	}
 }
 
@@ -139,11 +144,16 @@ func primarySlot(name string) bool {
 
 // Two-digit slots can show 0..99 and exactly 100 using dedicated hundreds
 // segments. Larger values cannot be rendered without inventing/clamping.
-func selectableMetric(m metrics, metric string, primary bool) (slotSelection, bool) {
+func selectableMetric(m metrics, metric string, primary bool, options ...map[string]indicatorConfig) (slotSelection, bool) {
 	v, ok := readMetric(m, metric)
 	if !ok || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return slotSelection{}, false
 	}
+	var indicators map[string]indicatorConfig
+	if len(options) > 0 {
+		indicators = options[0]
+	}
+	v = displayValue(metric, v, indicators, nil)
 	rounded := math.Round(v)
 	limit := 100.0
 	if primary {
@@ -152,15 +162,20 @@ func selectableMetric(m metrics, metric string, primary bool) (slotSelection, bo
 	if rounded < 0 || rounded > limit {
 		return slotSelection{}, false
 	}
-	return slotSelection{Metric: metric, Value: v, Valid: true}, true
+	return slotSelection{Metric: metric, Value: v, Valid: true, Unit: unitForMetric(metric, indicators, nil)}, true
 }
 
 // Missing or unrepresentable values are skipped. No zero-value fabrication.
 // Independent intervals do not share a global phase or metric index.
-func selectSlot(config slotConfig, m metrics, name string, elapsed time.Duration) slotSelection {
+func selectSlot(config slotConfig, m metrics, name string, elapsed time.Duration, options ...map[string]indicatorConfig) slotSelection {
+	var indicators map[string]indicatorConfig
+	if len(options) > 0 {
+		indicators = options[0]
+	}
 	available := make([]slotSelection, 0, len(config.Metrics))
 	for _, metric := range config.Metrics {
-		if s, ok := selectableMetric(m, metric, primarySlot(name)); ok {
+		if s, ok := selectableMetric(m, metric, primarySlot(name), indicators); ok {
+			s.Symbols = metricSymbols(metric, name, indicators, nil)
 			available = append(available, s)
 		}
 	}
@@ -177,15 +192,23 @@ func selectSlot(config slotConfig, m metrics, name string, elapsed time.Duration
 	return available[int(elapsed/interval)%len(available)]
 }
 
-func resolveDisplaySlots(config map[string]slotConfig, m metrics, elapsed time.Duration) map[string]slotSelection {
+func resolveDisplaySlots(config map[string]slotConfig, m metrics, elapsed time.Duration, options ...map[string]indicatorConfig) map[string]slotSelection {
+	var indicators map[string]indicatorConfig
+	if len(options) > 0 {
+		indicators = options[0]
+	}
 	selected := make(map[string]slotSelection, len(slotNames))
 	for _, name := range slotNames {
-		selected[name] = selectSlot(config[name], m, name, elapsed)
+		selected[name] = selectSlot(config[name], m, name, elapsed, indicators)
 	}
 	return selected
 }
 
-func powerSensorsRequired(slots map[string]slotConfig, style int) (cpu, gpu bool) {
+func powerSensorsRequired(slots map[string]slotConfig, style int, definitions ...map[string]derivedConfig) (cpu, gpu bool) {
+	var derived map[string]derivedConfig
+	if len(definitions) > 0 {
+		derived = definitions[0]
+	}
 	if style == 3 || style == 5 || style == 6 {
 		return true, true
 	} // dedicated power digits
@@ -194,11 +217,37 @@ func powerSensorsRequired(slots map[string]slotConfig, style int) (cpu, gpu bool
 	}
 	for _, name := range slotNames {
 		for _, metric := range slots[name].Metrics {
-			if metric == "cpu.power" {
-				cpu = true
+			var visit func(string)
+			visit = func(source string) {
+				switch source {
+				case "cpu.power":
+					cpu = true
+				case "gpu.power":
+					gpu = true
+				default:
+					for _, dependency := range derived[source].Sources {
+						visit(dependency)
+					}
+				}
 			}
-			if metric == "gpu.power" {
-				gpu = true
+			visit(metric)
+		}
+	}
+	return
+}
+
+// Memory telemetry is obtained only when an active slot can show it.
+func memorySensorsRequired(slots map[string]slotConfig, style int) (ram, vram bool) {
+	if style != 2 {
+		return
+	}
+	for _, name := range slotNames {
+		for _, metric := range slots[name].Metrics {
+			if strings.HasPrefix(metric, "memory.") {
+				ram = true
+			}
+			if strings.HasPrefix(metric, "gpu.memory.") {
+				vram = true
 			}
 		}
 	}
@@ -213,26 +262,39 @@ func renderPA120Slots(slots map[string]slotSelection) []bool {
 			continue
 		}
 		value := int(math.Round(s.Value))
-		kind := metricKind(s.Metric)
 		switch name {
 		case cpuPrimary:
-			if kind == "temperature" {
-				mark(out, 4)
+			for _, sym := range s.Symbols {
+				if sym == "C" {
+					mark(out, 4)
+				}
+				if sym == "F" {
+					mark(out, 5)
+				}
 			}
 			encodeNum(out, value, 3, 10)
 		case cpuSecondary:
-			if kind == "load" {
-				mark(out, 6)
+			for _, sym := range s.Symbols {
+				if sym == "%" {
+					mark(out, 6)
+				}
 			}
 			encodePartial(out, value, 31, 80, 81)
 		case gpuPrimary:
-			if kind == "temperature" {
-				mark(out, 7)
+			for _, sym := range s.Symbols {
+				if sym == "C" {
+					mark(out, 7)
+				}
+				if sym == "F" {
+					mark(out, 8)
+				}
 			}
 			encodeNum(out, value, 3, 45)
 		case gpuSecondary:
-			if kind == "load" {
-				mark(out, 9)
+			for _, sym := range s.Symbols {
+				if sym == "%" {
+					mark(out, 9)
+				}
 			}
 			encodePartial(out, value, 66, 82, 83)
 		}

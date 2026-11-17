@@ -16,8 +16,10 @@ import (
 )
 
 type appConfig struct {
-	Version int `json:"version"`
-	Device  struct {
+	Version    int                        `json:"version"`
+	Indicators map[string]indicatorConfig `json:"indicators,omitempty"`
+	Derived    map[string]derivedConfig   `json:"derived,omitempty"`
+	Device     struct {
 		PM int `json:"pm"` // 0 = hardware detection cache
 	} `json:"device"`
 	Sensors struct {
@@ -51,7 +53,9 @@ var zoneNames = []string{"cpu.temp", "cpu.load", "gpu.temp", "gpu.load"}
 
 func defaultAppConfig() appConfig {
 	var c appConfig
-	c.Version = 2
+	c.Version = 3
+	c.Indicators = make(map[string]indicatorConfig)
+	c.Derived = make(map[string]derivedConfig)
 	c.Sensors.CPUTemperature = "tctl" // no automatic fabricated 'CPU diode' conversion
 	c.Sensors.GPU = true              // PA120 has its own physical GPU row
 	c.Display.Interval = "1s"
@@ -115,8 +119,8 @@ func readAppConfig(path string) (appConfig, error) {
 }
 
 func validateAppConfig(c appConfig) error {
-	if c.Version != 2 {
-		return fmt.Errorf("version must be 2 (got %d)", c.Version)
+	if c.Version != 3 {
+		return fmt.Errorf("version must be 3 (got %d)", c.Version)
 	}
 	if c.Device.PM < 0 || c.Device.PM > 255 {
 		return fmt.Errorf("device.pm must be 0..255")
@@ -145,7 +149,13 @@ func validateAppConfig(c appConfig) error {
 	if c.Display.Brightness < 0 || c.Display.Brightness > 100 {
 		return errors.New("display.brightness must be 0..100")
 	}
-	if err := validateDisplaySlots(c.Display.Slots); err != nil {
+	if err := validateDisplaySlots(c.Display.Slots, c.Derived); err != nil {
+		return err
+	}
+	if err := validateDerived(c.Derived); err != nil {
+		return err
+	}
+	if err := validateSlotIndicators(c.Display.Slots, c.Indicators, c.Derived); err != nil {
 		return err
 	}
 	switch c.Theme.Preset {

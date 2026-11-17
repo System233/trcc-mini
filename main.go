@@ -254,7 +254,8 @@ func run() error {
 	if !supportsStyle(style) {
 		return fmt.Errorf("style %d has a different use (clock/disk/memory) or is not yet supported by this CPU display CLI", style)
 	}
-	needCPUPower, needGPUPower := powerSensorsRequired(config.Display.Slots, style)
+	needCPUPower, needGPUPower := powerSensorsRequired(config.Display.Slots, style, config.Derived)
+	needRAM, needVRAM := memorySensorsRequired(config.Display.Slots, style)
 	if verb == "once" {
 		opts.Verbose = true
 	}
@@ -331,6 +332,23 @@ func run() error {
 				m.GPUPower, m.GPUPowerValid = gpu.ReadPower()
 			}
 		}
+		// Memory sensors are native Windows/NVML APIs; no third-party
+		// service, privileged driver, or background process is required.
+		if needRAM {
+			if used, total, usage, ok := readSystemMemory(); ok {
+				m.setExtra("memory.used", used)
+				m.setExtra("memory.total", total)
+				m.setExtra("memory.load", usage)
+			}
+		}
+		if needVRAM && gpu != nil {
+			if used, total, usage, ok := gpu.ReadMemory(); ok {
+				m.setExtra("gpu.memory.used", used)
+				m.setExtra("gpu.memory.total", total)
+				m.setExtra("gpu.memory.load", usage)
+			}
+		}
+		applyDerived(&m, config.Derived)
 		phase := int(time.Since(start) / phasePeriod)
 		switch style {
 		case 1, 8, 13:
@@ -354,7 +372,7 @@ func run() error {
 		var selected map[string]slotSelection
 		var mask []bool
 		if style == 2 {
-			selected = resolveDisplaySlots(config.Display.Slots, m, time.Since(start))
+			selected = resolveDisplaySlots(config.Display.Slots, m, time.Since(start), config.Indicators)
 			mask = renderPA120Slots(selected)
 		} else {
 			mask, err = renderWithPower(style, m, phase, m.CPUPowerValid, m.GPUPowerValid)
@@ -381,6 +399,7 @@ func run() error {
 			if config.Theme.Link != "static" {
 				colors = globalPA120Colors(config.Theme, selected, color)
 			}
+			metricColorOverrides(colors, selected, config.Indicators)
 			packet = makeFrameColors(style, sub, mask, colors, config.Display.Brightness)
 		} else {
 			packet = makeFramePower(style, sub, mask, color, config.Display.Brightness, m.CPUPowerValid, m.GPUPowerValid, powerColor)

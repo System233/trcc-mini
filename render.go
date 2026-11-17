@@ -11,6 +11,10 @@ import (
 )
 
 type rgb struct{ R, G, B byte }
+type sampleValue struct {
+	Value float64
+	Valid bool
+}
 type metrics struct {
 	Load          int
 	Temp          float64
@@ -23,6 +27,14 @@ type metrics struct {
 	GPUTempValid  bool
 	GPUPower      float64
 	GPUPowerValid bool
+	Extras        map[string]sampleValue
+}
+
+func (m *metrics) setExtra(name string, value float64) {
+	if m.Extras == nil {
+		m.Extras = make(map[string]sampleValue)
+	}
+	m.Extras[name] = sampleValue{Value: value, Valid: true}
 }
 
 func (m metrics) TempString() string {

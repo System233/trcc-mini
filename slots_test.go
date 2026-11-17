@@ -234,6 +234,24 @@ func TestOnlyRequiredPowerSources(t *testing.T) {
 	}
 }
 
+func TestOnlyRequiredMemorySources(t *testing.T) {
+	slots := defaultDisplaySlots()
+	if ram, vram := memorySensorsRequired(slots, 2); ram || vram {
+		t.Fatal("memory read should be disabled if not displayed")
+	}
+	slots[cpuSecondary] = slotConfig{Metrics: []string{"memory.load"}}
+	if ram, vram := memorySensorsRequired(slots, 2); !ram || vram {
+		t.Fatal("RAM-only metric should not read VRAM")
+	}
+	slots[gpuSecondary] = slotConfig{Metrics: []string{"gpu.memory.load"}}
+	if ram, vram := memorySensorsRequired(slots, 2); !ram || !vram {
+		t.Fatal("both memory sources should now be required")
+	}
+	if ram, vram := memorySensorsRequired(slots, 3); ram || vram {
+		t.Fatal("non-PA120 layout must not sample unused memory")
+	}
+}
+
 func TestSlotSummary(t *testing.T) {
 	selected := resolveDisplaySlots(defaultDisplaySlots(), completeSlotMetrics(), 0)
 	summary := slotSummary(selected)
