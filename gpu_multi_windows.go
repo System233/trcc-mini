@@ -22,6 +22,7 @@ type nvmlPCIInfo struct {
 type windowsGPUInventory struct {
 	devices       []hardwareDevice
 	owner         *nvmlSensor
+	amd           *adlWindowsProvider
 	bound         map[int]*nvmlSensor
 	snapshot      metrics
 	last          time.Time
@@ -41,6 +42,10 @@ func openWindowsGPUInventory() (gpuTelemetry, error) {
 		return nil, fmt.Errorf("no physical PCI display-class GPU detected")
 	}
 	out := &windowsGPUInventory{devices: devices, bound: map[int]*nvmlSensor{}, extra: map[string]sampleValue{}}
+	// AMD ADL has a distinct device/driver context; its hardware indices
+	// are matched by native PCI + exact device instance ID, never by ADL
+	// logical-adapter ordinal. Missing AMD telemetry is nonfatal.
+	out.amd, _ = openAMDADL(devices)
 	owner, err := openNVML()
 	if err != nil {
 		// Intel/AMD devices remain enumerated but N/A until a corresponding
@@ -113,6 +118,10 @@ func (g *windowsGPUInventory) Close() {
 		g.owner.Close()
 		g.owner = nil
 	}
+	if g.amd != nil {
+		g.amd.Close()
+		g.amd = nil
+	}
 	g.bound = map[int]*nvmlSensor{}
 }
 func (g *windowsGPUInventory) Devices() []hardwareDevice {
@@ -121,6 +130,16 @@ func (g *windowsGPUInventory) Devices() []hardwareDevice {
 		if out[i].Vendor == "NVIDIA" {
 			if _, ok := g.bound[i]; !ok {
 				out[i].Driver = "NVML unbound"
+			}
+		} else if out[i].Vendor == "AMD" {
+			if g.amd != nil {
+				if _, ok := g.amd.adapters[i]; ok {
+					out[i].Driver = "ADL2 PMLog"
+				} else {
+					out[i].Driver = "ADL2 unbound"
+				}
+			} else {
+				out[i].Driver = "ADL2 unavailable"
 			}
 		} else {
 			out[i].Driver = "N/A (vendor backend not implemented)"
@@ -189,6 +208,28 @@ func (g *windowsGPUInventory) sample() {
 		} {
 			g.extra[name] = sampleValue{Value: v, Valid: true}
 		}
+	}
+	if g.amd != nil {
+		for name, value := range g.amd.Sample() {
+			g.extra[name] = sampleValue{Value: value, Valid: true}
+		}
+	}
+	// Recompute aggregate metrics from physical indexed devices across
+	// *all* providers, rather than inheriting NVIDIA-only global totals.
+	all := metrics{Extras: g.extra}
+	aggregateIndexedMetrics(&all, map[string]int{"gpu": len(g.devices)})
+	g.extra = all.Extras
+	g.snapshot.GPUTempValid = false
+	g.snapshot.GPULoadValid = false
+	g.snapshot.GPUPowerValid = false
+	if v, ok := readMetric(all, "gpu.temperature"); ok {
+		g.snapshot.GPUTemp, g.snapshot.GPUTempValid = v, true
+	}
+	if v, ok := readMetric(all, "gpu.load"); ok {
+		g.snapshot.GPULoad, g.snapshot.GPULoadValid = int(math.Round(v)), true
+	}
+	if v, ok := readMetric(all, "gpu.power"); ok {
+		g.snapshot.GPUPower, g.snapshot.GPUPowerValid = v, true
 	}
 }
 func (g *windowsGPUInventory) optionalMetrics(prefix string, s *nvmlSensor) {

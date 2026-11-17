@@ -135,7 +135,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 - `device.pm`：默认 `0` 表示使用已识别的设备缓存。可以手动填写确知的 PM 型号（如已确认 PA120 Digital 的 `16`）。
 - `sensors.cpuTemperature`：`tctl`、`ccd1`、`ccd2`、`ccd-max`、`ccd-avg`。在 AMD CPU 上，`tctl` 是散热控制温度，CCD 是芯粒温度，**不是主板 CPU Diode**；在 Intel CPU 上，`tctl` 映射为 IA32_PACKAGE_THERM_STATUS 的真实封装温度，CCD 专有指标不可用。不要用固定温差伪造温度。
-- `sensors.gpu`：PA120 的 GPU 行默认开启。Windows 的现有 GPU 后端是 NVIDIA NVML（Intel GPU 的 IGCL 接口尚未集成）；Linux 支持 NVIDIA 驱动工具、AMD amdgpu 和 Intel i915/xe hwmon/sysfs；macOS 根据系统提供的可用传感器采集。缺少原生数据时返回 N/A。
+- `sensors.gpu`：PA120 的 GPU 行默认开启。Windows 支持 NVIDIA NVML 和 AMD 驱动自带的 ADL2 PMLog（只读、按 PCI 地址精确匹配；Intel GPU 的 IGCL 接口尚未集成）；Linux 支持 NVIDIA 驱动工具、AMD amdgpu 和 Intel i915/xe hwmon/sysfs；macOS 根据系统提供的可用传感器采集。缺少原生数据时返回 N/A。
 - 真实 Windows CPU 温度与功耗需要 [PawnIO](https://pawnio.eu/) 签名内核驱动及足够的访问权限。随 EXE 内置 AMD AMDFamily17 和 Intel IntelMSR 签名模块，由实际 CPU 厂商选择；Intel 通过 MSR 温度寄存器与 RAPL 能耗计数器读取，不安装内核驱动，也不依赖 HWiNFO 或已停止维护的 Intel Power Gadget。
 - `sensors` 命令仅打印可用的温度/功耗读数，方便核对来源。
 
@@ -188,13 +188,16 @@ Windows 从系统显示设备类枚举真实 PCI 显卡，按照 PCI 总线、�
 | `cpu0.clock` / `cpu.clock.max` | 系统报告的平均/最高当前处理器时钟，MHz；Windows 的 Power API 值不是逐周期测得的有效频率 |
 | `gpu0.temperature` / `gpu0.load` | 指定 GPU 温度 °C / 使用率 % |
 | `gpu0.power` / `gpu0.power.limit` | GPU 当前功率 W / 驱动设置的功率上限 W，**两者不是同一指标** |
+| `gpu1.power.gfx` / `gpu1.power.asic` / `gpu1.power.soc` | AMD 驱动分别报告的图形域 / ASIC / SoC 功率，W；各域可能与 CPU 封装重叠，不自动等价于独显板卡功耗 |
+| `gpu1.power.board` | AMD 驱动明确提供板卡功率时才有效，W；仅此时可用于缺省的 `gpu1.power` |
+| `gpu1.temperature.soc` / `gpu1.voltage` | AMD SoC 温度 °C / 图形域电压 V（依驱动实际支持） |
 | `gpu0.clock.core` / `gpu0.clock.memory` | 核心、显存时钟 MHz |
 | `gpu0.load.memory` / `gpu0.memory.load` | 显存控制器忙碌率 / 显存空间占用率，% |
 | `gpu0.memory.used` / `gpu0.memory.total` | 专用显存 GiB，核显不虚构独立显存 |
 | `gpu0.fan.load` / `gpu0.pcie.tx` / `gpu0.pcie.rx` | 风扇百分比 / PCIe MB/s |
 | `gpu0.temperature.hotspot` / `gpu0.temperature.memory` | 驱动支持时的热点/显存温度；否则 N/A |
 
-所有可配置的设备指标名称可通过 `sensors list` 查看。即使配置使用了该名称，也不表示当前型号/驱动一定支持该传感器。无索引综合指标遵循：功率和容量求和、温度和 GPU 负载取最高值、CPU 总负载使用系统提供的加权值、显存占用百分比使用同一组有完整已用/总量读数的设备加总后计算。**N/A 不参与聚合，只有全部无有效数据时才显示 N/A**。此规则不代表缺失数据的设备功率为真实的 0W。当前 Windows AMD/Intel GPU 厂商遥测后端尚未接入，设备仍会在枚举中占用自身编号。
+所有可配置的设备指标名称可通过 `sensors list` 查看。即使配置使用了该名称，也不表示当前型号/驱动一定支持该传感器。无索引综合指标遵循：功率和容量求和、温度和 GPU 负载取最高值、CPU 总负载使用系统提供的加权值、显存占用百分比使用同一组有完整已用/总量读数的设备加总后计算。**N/A 不参与聚合，只有全部无有效数据时才显示 N/A**。此规则不代表缺失数据的设备功率为真实的 0W。Windows 的 AMD ADL2 能提供温度、图形负载、时钟、电压及多种功率域；当只有 CPU/SoC 可能重叠的功率读数时，`gpuN.power` 仍为 N/A，不污染 `gpu.power`。Windows Intel GPU 的 IGCL 遥测尚未接入，Intel GPU 仍会在枚举中占用自身编号。
 
 使用示例：将任意现有 `display.slots.gpu.primary.metrics` 设置为 `["gpu0.power", "gpu0.temperature"]`（并设置 `interval`），即可在同一三位数区域轮换**指定显卡**的实际功耗与温度。其他指标级符号、颜色配置照旧。三位数不能容纳 4300MHz 等四位频率时，该值不会被错误截断，现有显示选择器将跳过。
 

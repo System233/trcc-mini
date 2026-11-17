@@ -50,6 +50,20 @@ func enumerateSensorReadings() (sensorListing, error) {
 	}
 	populateCPUIndexed(&snapshot)
 	if gpu, e := openGPUSensor(); e == nil {
+		if inventory, ok := gpu.(interface{ Devices() []hardwareDevice }); ok {
+			providers := inventory.Devices()
+			for i := range result.Devices {
+				if result.Devices[i].Kind != "gpu" {
+					continue
+				}
+				for _, provided := range providers {
+					if provided.Index == result.Devices[i].Index {
+						result.Devices[i].Driver = provided.Driver
+						break
+					}
+				}
+			}
+		}
 		snapshot.GPUTemp, snapshot.GPUTempValid, snapshot.GPULoad, snapshot.GPULoadValid = gpu.Read()
 		snapshot.GPUPower, snapshot.GPUPowerValid = gpu.ReadPower()
 		if used, total, load, ok := gpu.ReadMemory(); ok {

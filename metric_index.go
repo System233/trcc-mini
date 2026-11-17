@@ -16,13 +16,13 @@ var cpuMetricUnits = map[string]string{
 	"load": "percent", "clock": "MHz", "clock.max": "MHz", "voltage": "V",
 }
 var gpuMetricUnits = map[string]string{
-	"temperature": "C", "temperature.hotspot": "C", "temperature.memory": "C",
-	"power": "W", "power.board": "W", "power.limit": "W",
+	"temperature": "C", "temperature.hotspot": "C", "temperature.memory": "C", "temperature.soc": "C",
+	"power": "W", "power.board": "W", "power.limit": "W", "power.asic": "W", "power.gfx": "W", "power.soc": "W",
 	"load": "percent", "load.compute": "percent", "load.memory": "percent",
 	"clock.core": "MHz", "clock.memory": "MHz",
 	"memory.used": "GiB", "memory.total": "GiB", "memory.load": "percent",
 	"memory.shared.used": "GiB",
-	"fan.speed":          "RPM", "fan.load": "percent",
+	"fan.speed":          "RPM", "fan.load": "percent", "voltage": "V", "voltage.soc": "V",
 	"pcie.tx": "MB/s", "pcie.rx": "MB/s",
 }
 
