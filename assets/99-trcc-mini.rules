@@ -1,0 +1,4 @@
+# PA120 Digital and compatible Thermalright USB HID panel (0416:8001).
+# An active desktop session can access hidraw without running TRCC Mini as root.
+# Install to /etc/udev/rules.d/99-trcc-mini.rules, reload rules, reconnect device.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8001", MODE="0660", TAG+="uaccess"

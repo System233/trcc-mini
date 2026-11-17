@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Minimal Windows HID segment-display controller, ported from
+// Minimal cross-platform HID segment-display controller, ported from
 // Lexonight1/thermalright-trcc-linux (GPL-3.0).
 package main
 
@@ -83,7 +83,7 @@ func styleFromPM(pm int, magic []byte) (int, string) {
 	return 0, "unknown"
 }
 func usage() {
-	fmt.Println(`TRCC Mini — Windows HID CLI
+	fmt.Println(`TRCC Mini — HID display CLI
 
 Usage:
   trcc-mini config init                 Create trcc-mini.json beside the EXE
@@ -144,7 +144,7 @@ func run() error {
 		return serviceCommand(os.Args[2:])
 	}
 	if verb == "service-run" {
-		return runWindowsService(os.Args[2:])
+		return runManagedService(os.Args[2:])
 	}
 	if verb != "detect" && verb != "probe" && verb != "run" && verb != "once" {
 		return fmt.Errorf("unknown command %q (run 'trcc-mini help')", verb)
@@ -277,7 +277,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 	if verb == "once" {
 		opts.Verbose = true
 	}
-	var d *hidDevice
+	var d hidTransport
 	if !opts.DryRun {
 		if path != "" {
 			d, err = openHID(path)
@@ -295,7 +295,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 		}()
 	}
 	var cpu cpuLoadSampler
-	pawn, err := openPawn()
+	pawn, err := openCPUSensor()
 	defer func() {
 		if pawn != nil {
 			pawn.Close()
@@ -304,16 +304,16 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NOTE: CPU temperature source %s unavailable: %v; CPU temperature digits will be blank\n", config.Sensors.CPUTemperature, err)
 	}
-	var gpu *nvmlSensor
+	var gpu gpuTelemetry
 	defer func() {
 		if gpu != nil {
 			gpu.Close()
 		}
 	}()
 	if config.Sensors.GPU {
-		gpu, err = openNVML()
+		gpu, err = openGPUSensor()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "NOTE: NVIDIA GPU sensor unavailable:", err)
+			fmt.Fprintln(os.Stderr, "NOTE: GPU sensor unavailable:", err)
 		}
 	} else if style == 2 {
 		fmt.Fprintln(os.Stderr, "NOTE: PA120 GPU row disabled in config (sensors.gpu=false)")
@@ -339,7 +339,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 	var reconnectAfter time.Time
 	start := time.Now()
 	nextPhase := -1
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt)
+	ctx, stop := signal.NotifyContext(parent, serviceSignals()...)
 	defer stop()
 	fmt.Printf("Running: style=%d, sampling=%s, cpu-temp-source=%s, link=%s, brightness=%d%%, dry=%v\n", style, period.String(), config.Sensors.CPUTemperature, config.Theme.Link, config.Display.Brightness, opts.DryRun)
 	ticker := time.NewTicker(period)
@@ -352,33 +352,33 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 		if ctx.Err() != nil {
 			return nil
 		}
-		// USB, GPU and PawnIO may appear later during Windows boot. Keep
+		// USB, GPU and CPU sensors may become available after service boot. Keep
 		// the auto-start service alive rather than requiring a manual restart.
 		if pawn == nil && time.Since(lastPawnRetry) >= 10*time.Second {
 			lastPawnRetry = time.Now()
-			if restored, e := openPawn(); e == nil {
+			if restored, e := openCPUSensor(); e == nil {
 				pawn = restored
-				fmt.Println("CPU/PawnIO sensor connected")
+				fmt.Println("CPU temperature/power sensor connected")
 			}
 		}
 		if gpu == nil && config.Sensors.GPU && time.Since(lastGPURetry) >= 10*time.Second {
 			lastGPURetry = time.Now()
-			if restored, e := openNVML(); e == nil {
+			if restored, e := openGPUSensor(); e == nil {
 				gpu = restored
-				fmt.Println("GPU/NVML sensor connected")
+				fmt.Println("GPU telemetry sensor connected")
 			}
 		}
 		// Content hash catches atomic rename and same-mtime rewrites. It also
 		// keeps invalid partial writes from replacing active state.
 		if reloader != nil && time.Since(lastConfigCheck) >= 500*time.Millisecond {
 			lastConfigCheck = time.Now()
-			var stagedGPU *nvmlSensor
+			var stagedGPU gpuTelemetry
 			updated, reloadErr := reloader.check(func(old, next appConfig) error {
 				if !old.Sensors.GPU && next.Sensors.GPU {
 					var e error
-					stagedGPU, e = openNVML()
+					stagedGPU, e = openGPUSensor()
 					if e != nil {
-						return fmt.Errorf("GPU enable requires NVML: %w", e)
+						return fmt.Errorf("GPU enable requires available telemetry provider: %w", e)
 					}
 				}
 				return nil
@@ -435,8 +435,7 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 				m.GPUPower, m.GPUPowerValid = gpu.ReadPower()
 			}
 		}
-		// Memory sensors are native Windows/NVML APIs; no third-party
-		// service, privileged driver, or background process is required.
+		// RAM/VRAM providers expose a common unit across OS implementations.
 		if needRAM {
 			if used, total, usage, ok := readSystemMemory(); ok {
 				m.setExtra("memory.used", used)

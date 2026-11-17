@@ -1,6 +1,6 @@
-# TRCC Mini — Windows HID 数码屏 CLI
+# TRCC Mini — 跨平台 USB HID 数码屏 CLI
 
-轻量、原生、单文件的 Thermalright TRCC 数码屏控制程序。运行时不需要 Python、.NET、GUI、Node 或独立配置服务。源代码仅使用 Go 标准库，支持 Windows x64，USB 设备 VID:PID 为 `0416:8001`。
+轻量、原生、单文件的 Thermalright TRCC 数码屏控制程序。运行时不需要 Python、.NET、GUI、Node 或独立配置服务。公共核心仅使用 Go 标准库，USB 设备 VID:PID 为 `0416:8001`。Windows 已有实机开发基线；Linux 实现原生 hidraw/hwmon/systemd，macOS 提供实验性的 IOKit/launchd 适配。
 
 协议、LED 段码映射源自开源项目 [thermalright-trcc-linux](https://github.com/Lexonight1/thermalright-trcc-linux)（GPL-3.0）。
 
@@ -36,7 +36,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 **参数规范：** `-c`、`-n`、`-v`、`-h` 是单字符短参数；对应长参数为 `--config`、`--dry-run`、`--verbose`、`--help`。传感器、GPU、功耗、亮度和主题不提供命令行参数，只在 JSON 中配置。
 
-默认配置文件 `trcc-mini.json` 位于 EXE 同目录；启动前必须存在，可通过 `config init` 创建。用户也可以通过 `--config FILE` 指定另一个位置，不进行隐式查找或迁移。设备握手缓存 `device.json` 位于 Windows 用户配置目录，是**另一份自动生成的文件**，不要用它配置主题。**Windows 服务以 LocalSystem 账户运行，必须在 `device.pm` 中明确配置型号，不能依赖交互用户的设备缓存。**
+默认配置文件 `trcc-mini.json` 位于可执行文件同目录；启动前必须存在，可通过 `config init` 创建。用户也可以通过 `--config FILE` 指定另一个位置，不进行隐式查找或迁移。设备握手缓存 `device.json` 位于系统返回的用户配置目录，是**另一份自动生成的文件**，不要用它配置主题。**后台服务以独立身份运行，必须在 `device.pm` 中明确配置型号，不能依赖交互用户的设备缓存。**
 
 ## 配置字段（示例）
 
@@ -133,7 +133,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 - `device.pm`：默认 `0` 表示使用已识别的设备缓存。可以手动填写确知的 PM 型号（如已确认 PA120 Digital 的 `16`）。
 - `sensors.cpuTemperature`：`tctl`、`ccd1`、`ccd2`、`ccd-max`、`ccd-avg`。`tctl` 是 AMD 散热控制温度；CCD 是芯粒温度，**不是主板 CPU Diode**。不要用固定温差伪造二极管读数。
-- `sensors.gpu`：PA120 的 GPU 行默认开启；使用 NVIDIA NVML 读取温度、负载、功耗，不需要单独程序。
+- `sensors.gpu`：PA120 的 GPU 行默认开启。Windows 从 NVIDIA NVML 读取；Linux 从 NVIDIA 驱动工具或 AMD sysfs 读取；macOS 根据系统提供的可用传感器采集。缺少原生数据时返回 N/A。
 - 真实 CPU 温度与功耗需要 Windows 的 [PawnIO](https://pawnio.eu/) 签名内核驱动及足够的访问权限。随 EXE 内置已签名的 AMD 模块，但不安装内核驱动，也不依赖 HWiNFO。
 - `sensors` 命令仅打印可用的温度/功耗读数，方便核对来源。
 
@@ -163,7 +163,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 | `cpu.power` / `gpu.power` | W，CPU 封装 / GPU 读取到的功耗 |
 | `memory.used` / `memory.total` | GiB，Windows 已用/总物理 RAM |
 | `memory.load` | %，物理 RAM 使用率 |
-| `gpu.memory.used` / `gpu.memory.total` | GiB，NVML 显存已用/总容量 |
+| `gpu.memory.used` / `gpu.memory.total` | GiB，支持的平台/独显的显存已用/总容量（macOS Apple Silicon 不按独显 VRAM 处理） |
 | `gpu.memory.load` | %，显存使用率 |
 | `system.power.estimated` | W，**仅在 `derived` 明确配置后可用**，且为估算，不是墙上插座实测 |
 
@@ -214,9 +214,64 @@ Windows 服务使用 LocalSystem 账户，`device.pm: 0` 无法使用你的个�
 
 服务运行日志写入 `%ProgramData%\TRCCMini\service.log`，包含配置重载结果、设备连接错误和启动/停止信息。服务响应 Windows 停止/关机通知并退出；USB 设备或传感器在启动阶段未就绪时会重试，而不是每次都停止服务。**不要同时启动普通 `run` 与 Windows 服务，也不要与原厂 TRCC 程序争抢同一 USB 设备。**
 
+### Linux（amd64 / arm64）
+
+Linux 原生后端采用 `/dev/hidraw*` 和 `HIDIOCGRAWINFO` 发现 `0416:8001`，直接发送/接收 HID 报文，使用零号 Report ID 加 64 字节负载；不依赖 libusb 或 cgo。
+
+```bash
+go build -trimpath -o trcc-mini .
+./trcc-mini config init
+# 已确认 PA120 Digital 的 JSON 配置 device.pm = 16
+./trcc-mini config check
+./trcc-mini detect
+./trcc-mini once      # 只渲染，不写 USB
+./trcc-mini run
+```
+
+普通桌面用户可通过 udev 授权当前登录会话访问设备：
+
+```bash
+sudo install -m 644 assets/99-trcc-mini.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=hidraw
+```
+
+Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，CPU 温度通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取。
+
+systemd 服务直接复用 `run` 的热重载和停止信号处理。安装需要 root，且需预先准备有效 JSON（`device.pm` 不得为 0）：
+
+```bash
+sudo ./trcc-mini service install --config /etc/trcc-mini/trcc-mini.json
+sudo ./trcc-mini service start
+./trcc-mini service status
+journalctl -u trcc-mini.service -f
+sudo ./trcc-mini service stop
+sudo ./trcc-mini service uninstall
+```
+
+服务安装时复制程序至 `/usr/local/libexec/trcc-mini/trcc-mini`，配置 systemd 单元 `/etc/systemd/system/trcc-mini.service`；启动后保持原 JSON 文件位置以便热更新。上述 `/etc/trcc-mini/trcc-mini.json` 仅是示例，必须由你提前创建；也可不提供 `--config`，使用 EXE 旁已有的 JSON。安装默认启用开机自启但不会立即启动。无桌面会话的主机可使用服务账户访问 HID，不要将 hidraw 设备直接设为世界可写。
+
+### macOS（Intel / Apple Silicon，实验性）
+
+```bash
+# 在真实 macOS 主机使用 Xcode Command Line Tools 和 cgo 构建
+CGO_ENABLED=1 go build -trimpath -o trcc-mini .
+./trcc-mini config check
+./trcc-mini detect
+./trcc-mini once
+```
+
+原生 IOKit 通过 `IOHIDManager` 枚举设备，并使用 `IOHIDDeviceSetReport` 发送 Output Report；编译链接 Apple 自带的 IOKit 和 CoreFoundation 框架，无第三方 Go 包。**在非 macOS 主机通过 `CGO_ENABLED=0` 交叉编译得到的 macOS 程序仅支持配置/诊断，USB HID 命令会明确提示须在 macOS 原生 cgo 构建。**
+
+CPU 负载取自 `sysctl kern.cp_time`；RAM 使用 `sysctl hw.memsize` 和 `vm_stat`，提供考虑可回收页的近似占用指标。获授权时，`powermetrics` 可用于部分 CPU/GPU 功率、CPU die 温度和 GPU 活跃度；权限或采样器不具备时返回 N/A。Apple Silicon 使用统一内存，**不将它误报为独立 GPU VRAM**，AMD CCD 专用温度也不做伪造。
+
+macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/stop/status/uninstall`，安装和启停需要 `sudo`。安装目标为 `/usr/local/libexec/trcc-mini/trcc-mini`，服务配置在 `/Library/LaunchDaemons/com.trcc-mini.display.plist`，日志为 `/var/log/trcc-mini.log`。
+
+**验证边界：** Linux amd64/arm64、macOS amd64/arm64（无 cgo）已通过交叉编译；macOS IOKit 的原生 cgo 编译/链接、两个新平台的真实 USB 写入、传感器采样及 systemd/launchd 启停尚未在目标主机测试。仓库包含 `.github/workflows/cross-platform.yml`，用于在相应系统执行原生构建和测试。
+
 ### 配置热重载与失败保护
 
-`run` 与 Windows 服务**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，须成功准备 NVML 后才提交新配置。
+`run` 与 Windows SCM、Linux systemd、macOS launchd 的服务进程**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，须成功准备该平台的 GPU 采集器后才提交新配置。
 
 如果 JSON 不完整、某字段非法、文件被删除或新 GPU 资源无法初始化，则**拒绝本次重载，继续运行上一份有效配置**，并记录一条错误，不以默认配置覆盖现场值。编辑磁盘文件不会被程序自动回滚：请纠正 JSON 后再次保存。唯一明确不支持热切换的业务参数是 `device.pm`（硬件型号），修改时拒绝重载，需要停止并重启程序或服务。自定义配置文件路径只能在启动/安装时确定。
 
@@ -228,7 +283,7 @@ Windows 服务使用 LocalSystem 账户，`device.pm: 0` 无法使用你的个�
 
 `config init/show/check/path`、`sensors` 不操作 USB；`detect` 只枚举 USB；`once` 或 `run -n` 完全不写入 USB，适合先验证 JSON 和渲染。
 
-`once` 在任一区域需要 CPU 功耗时先读取一次 AMD 能量计数器作为基线，
+`once` 在任一区域需要 CPU 功耗时先读取一次能耗计数器作为基线（如 Windows AMD MSR 或 Linux RAPL），
 再间隔 500ms 采集下一次值；单帧预览显示每个区域的**第一个有效指标**。
 普通 `run` 不增加该等待，
 第一次 CPU 功耗采样属于预热，可能为 `N/A`；

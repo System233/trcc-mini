@@ -437,7 +437,7 @@ func openServiceLog() (*os.File, error) {
 	return os.OpenFile(filepath.Join(dir, "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 }
 
-func runWindowsService(args []string) error {
+func runManagedService(args []string) error {
 	path, err := configArgPath(args)
 	if err != nil {
 		return err

@@ -2,3 +2,4 @@
 /upstream-reference/
 *.exe
 /trcc-mini.json
+/dist/
