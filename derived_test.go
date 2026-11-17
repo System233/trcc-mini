@@ -30,11 +30,11 @@ func TestDerivedPowerEstimate(t *testing.T) {
 
 	m.GPUPowerValid = false
 	applyDerived(&m, definitions)
-	if _, ok = readMetric(m, "system.power.estimated"); ok {
-		t.Fatal("must NOT estimate using an absent GPU power source")
+	if value, valid := readMetric(m, "system.power.estimated"); !valid || value != 120 {
+		t.Fatalf("missing GPU must be ignored: got %.1f valid=%t", value, valid)
 	}
-	if _, ok = readMetric(m, "other.power.estimated"); ok {
-		t.Fatal("downstream derived source must be invalid")
+	if value, valid := readMetric(m, "other.power.estimated"); !valid || value != 90 {
+		t.Fatalf("GPU-missing sum must retain CPU power: got %.1f valid=%t", value, valid)
 	}
 }
 func TestDerivedInvalidConfig(t *testing.T) {

@@ -12,12 +12,18 @@ import (
 // compare real sensor sources before selecting one for the display.
 func sensorDiagnostics() error {
 	fmt.Println("CPU temperature sources (read-only; no USB writes):")
-	pawn, err := openPawn()
+	vendor := windowsCPUVendor()
+	pawn, err := openCPUSensor()
 	if err != nil {
-		fmt.Println("  PawnIO: unavailable:", err)
+		fmt.Println("  CPU sensor: unavailable:", err)
 	} else {
 		defer pawn.Close()
-		for _, source := range []string{"tctl", "ccd1", "ccd2", "ccd-max", "ccd-avg"} {
+		sources := []string{"tctl", "ccd1", "ccd2", "ccd-max", "ccd-avg"}
+		if vendor == "GenuineIntel" {
+			sources = []string{"tctl"} // package sensor, not AMD CCD
+			fmt.Println("  Intel processor: signed PawnIO IntelMSR (read-only)")
+		}
+		for _, source := range sources {
 			value, e := pawn.ReadTemp(source)
 			if e != nil {
 				fmt.Printf("  %-9s N/A (%v)\n", source, e)
@@ -73,6 +79,8 @@ func sensorDiagnostics() error {
 			fmt.Println("  CPU power:  N/A (energy counter warming up)")
 		}
 	}
-	fmt.Println("Note: CCD1/CCD2 are chiplet sensors; ASUS CPU Diode is a distinct motherboard sensor, not an alias.")
+	if vendor != "GenuineIntel" {
+		fmt.Println("Note: CCD1/CCD2 are AMD chiplet sensors; ASUS CPU Diode is a distinct motherboard sensor.")
+	}
 	return nil
 }

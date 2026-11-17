@@ -1,7 +1,7 @@
 //go:build linux
 
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Linux GPU providers: NVIDIA driver CLI or AMD DRM/sysfs. Polling is
+// Linux GPU providers: NVIDIA driver CLI, AMD DRM, Intel i915/xe. Polling is
 // asynchronous after detection so a slow nvidia-smi never stalls HID frames.
 package main
 
@@ -39,6 +39,7 @@ type linuxGPU struct {
 	latest      atomic.Pointer[linuxGPUSnapshot]
 	lastAttempt atomic.Int64
 	refreshing  atomic.Bool
+	intelEnergy intelEnergySampler
 }
 
 func (g *linuxGPU) initialSample() linuxGPUSnapshot {
@@ -57,15 +58,24 @@ func openGPUSensor() (gpuTelemetry, error) {
 	cards, _ := filepath.Glob("/sys/class/drm/card*/device/vendor")
 	for _, path := range cards {
 		b, e := os.ReadFile(path)
-		if e != nil || strings.TrimSpace(string(b)) != "0x1002" {
+		if e != nil {
 			continue
 		}
-		g := &linuxGPU{backend: "amd", device: filepath.Dir(path)}
+		backend := ""
+		switch strings.ToLower(strings.TrimSpace(string(b))) {
+		case "0x1002":
+			backend = "amd"
+		case "0x8086":
+			backend = "intel"
+		default:
+			continue
+		}
+		g := &linuxGPU{backend: backend, device: filepath.Dir(path)}
 		if snapshot := g.initialSample(); snapshot.available() {
 			return g, nil
 		}
 	}
-	return nil, errors.New("Linux GPU telemetry unavailable (NVIDIA nvidia-smi or AMD amdgpu sysfs)")
+	return nil, errors.New("Linux GPU telemetry unavailable (NVIDIA nvidia-smi, AMD amdgpu, or Intel i915/xe sysfs)")
 }
 func (g *linuxGPU) Close() {}
 
@@ -117,6 +127,9 @@ func (g *linuxGPU) collect() linuxGPUSnapshot {
 		}
 		s.temp, s.tempValid, s.load, s.loadValid, s.watts, s.powerValid, s.used, s.total, s.memoryValid = parseNvidiaSnapshot(string(output))
 		return s
+	}
+	if g.backend == "intel" {
+		return g.collectIntel()
 	}
 	readAMD := func(name string) (float64, bool) {
 		v, e := readSysFloat(filepath.Join(g.device, name))

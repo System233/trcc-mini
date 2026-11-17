@@ -118,15 +118,18 @@ func applyDerived(m *metrics, definitions map[string]derivedConfig) {
 		calculated[name] = true
 		d := definitions[name]
 		sum := d.Offset
+		validSources := 0
 		for _, source := range d.Sources {
 			value, valid := eval(source)
-			if !valid {
-				m.Extras[name] = sampleValue{}
-				return 0, false
+			// A temporarily missing sensor must not poison a sum; even
+			// nested derived values contribute only when genuinely valid.
+			if !valid || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				continue
 			}
+			validSources++
 			sum += value
 		}
-		if math.IsNaN(sum) || math.IsInf(sum, 0) || sum < 0 {
+		if validSources == 0 || math.IsNaN(sum) || math.IsInf(sum, 0) || sum < 0 {
 			m.Extras[name] = sampleValue{}
 			return 0, false
 		}

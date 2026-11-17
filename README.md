@@ -132,9 +132,9 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 ### 硬件 / 温度
 
 - `device.pm`：默认 `0` 表示使用已识别的设备缓存。可以手动填写确知的 PM 型号（如已确认 PA120 Digital 的 `16`）。
-- `sensors.cpuTemperature`：`tctl`、`ccd1`、`ccd2`、`ccd-max`、`ccd-avg`。`tctl` 是 AMD 散热控制温度；CCD 是芯粒温度，**不是主板 CPU Diode**。不要用固定温差伪造二极管读数。
-- `sensors.gpu`：PA120 的 GPU 行默认开启。Windows 从 NVIDIA NVML 读取；Linux 从 NVIDIA 驱动工具或 AMD sysfs 读取；macOS 根据系统提供的可用传感器采集。缺少原生数据时返回 N/A。
-- 真实 CPU 温度与功耗需要 Windows 的 [PawnIO](https://pawnio.eu/) 签名内核驱动及足够的访问权限。随 EXE 内置已签名的 AMD 模块，但不安装内核驱动，也不依赖 HWiNFO。
+- `sensors.cpuTemperature`：`tctl`、`ccd1`、`ccd2`、`ccd-max`、`ccd-avg`。在 AMD CPU 上，`tctl` 是散热控制温度，CCD 是芯粒温度，**不是主板 CPU Diode**；在 Intel CPU 上，`tctl` 映射为 IA32_PACKAGE_THERM_STATUS 的真实封装温度，CCD 专有指标不可用。不要用固定温差伪造温度。
+- `sensors.gpu`：PA120 的 GPU 行默认开启。Windows 的现有 GPU 后端是 NVIDIA NVML（Intel GPU 的 IGCL 接口尚未集成）；Linux 支持 NVIDIA 驱动工具、AMD amdgpu 和 Intel i915/xe hwmon/sysfs；macOS 根据系统提供的可用传感器采集。缺少原生数据时返回 N/A。
+- 真实 Windows CPU 温度与功耗需要 [PawnIO](https://pawnio.eu/) 签名内核驱动及足够的访问权限。随 EXE 内置 AMD AMDFamily17 和 Intel IntelMSR 签名模块，由实际 CPU 厂商选择；Intel 通过 MSR 温度寄存器与 RAPL 能耗计数器读取，不安装内核驱动，也不依赖 HWiNFO 或已停止维护的 Intel Power Gadget。
 - `sensors` 命令仅打印可用的温度/功耗读数，方便核对来源。
 
 ### 显示区域 / 独立指标轮换
@@ -182,7 +182,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 `derived` 使用 `operation: "sum"` 和 `sources` 定义多个瓦数指标的加总，`offset` 是你手动估计的其他系统负载功耗（默认 0W）。可以递归引用其他派生项，但不允许循环依赖、重复计入同一输入、或混合温度与功耗。
 
-例如：`cpu.power + gpu.power + offset` 可定义 `system.power.estimated`，但**CPU 封装+GPU 功耗不等于整机输入功耗**。主板、内存、SSD、风扇、PSU 损耗等通常没有直接测量；若没有外接功率计，不能将其标为真实整机功耗。任一必要源无效时，派生结果也为 N/A，而非部分求和。
+例如：`cpu.power + gpu.power + offset` 可定义 `system.power.estimated`，但**CPU 封装+GPU 功耗不等于整机输入功耗**。主板、内存、SSD、风扇、PSU 损耗等通常没有直接测量；若没有外接功率计，不能将其标为真实整机功耗。派生求和**忽略 N/A**，仅累加可用值并加上 `offset`；**全部源无效时结果才是 N/A**。缺失的功耗不会被当作零瓦实测，综合结果可能是不完整的估算。
 
 如需显示它，将 `"system.power.estimated"` 加入任一三位槽位的 `metrics` 数组。派生名称必须以 `.estimated` 结尾，明确表达估算语义。
 
@@ -236,7 +236,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw
 ```
 
-Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，CPU 温度通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取。
+Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，AMD/Intel CPU 温度分别通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取；Intel 核显/Arc 通过 i915/xe 的设备级 hwmon 读取温度、能耗计数器并换算功率，能获得独立显存容量的 Arc 设备也提供 VRAM 指标。Intel GPU 的 `power1_max` 是功耗**上限**，不是当前功耗，不能作为采样结果；缺少 GPU 全局使用率计数器时不根据频率伪造负载。
 
 systemd 服务直接复用 `run` 的热重载和停止信号处理。安装需要 root，且需预先准备有效 JSON（`device.pm` 不得为 0）：
 
@@ -283,7 +283,7 @@ macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/st
 
 `config init/show/check/path`、`sensors` 不操作 USB；`detect` 只枚举 USB；`once` 或 `run -n` 完全不写入 USB，适合先验证 JSON 和渲染。
 
-`once` 在任一区域需要 CPU 功耗时先读取一次能耗计数器作为基线（如 Windows AMD MSR 或 Linux RAPL），
+`once` 在任一区域需要 CPU 功耗时先读取一次能耗计数器作为基线（如 Windows AMD/Intel MSR 或 Linux RAPL），
 再间隔 500ms 采集下一次值；单帧预览显示每个区域的**第一个有效指标**。
 普通 `run` 不增加该等待，
 第一次 CPU 功耗采样属于预热，可能为 `N/A`；
@@ -302,4 +302,4 @@ go vet ./...
 go build -trimpath -buildvcs=false -ldflags="-s -w" -o trcc-mini.exe .
 ```
 
-GPL-3.0-or-later 源代码许可见 `LICENSE`；内置 AMD 模块的 LGPL-2.1 信息见 `LICENSE.PawnIO.Modules` 与 `NOTICE.md`。
+GPL-3.0-or-later 源代码许可见 `LICENSE`；内置 AMD/Intel PawnIO 模块的 LGPL-2.1 信息见 `LICENSE.PawnIO.Modules` 与 `NOTICE.md`。
