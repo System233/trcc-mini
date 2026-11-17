@@ -133,6 +133,12 @@ func powerSourcesOverlap(a, b string) bool {
 	}
 	// At least one source is the whole package/device; the other can be
 	// included within it. Exact disjoint domains may be explicitly added.
+	if as == "power.asic" && (bs == "power.gfx" || bs == "power.soc") {
+		return true
+	}
+	if bs == "power.asic" && (as == "power.gfx" || as == "power.soc") {
+		return true
+	}
 	return as == "power" || bs == "power" || as == "power.board" || bs == "power.board"
 }
 

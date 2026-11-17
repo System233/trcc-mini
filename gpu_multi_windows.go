@@ -23,6 +23,7 @@ type windowsGPUInventory struct {
 	devices       []hardwareDevice
 	owner         *nvmlSensor
 	amd           *adlWindowsProvider
+	intel         *igclWindowsProvider
 	bound         map[int]*nvmlSensor
 	snapshot      metrics
 	last          time.Time
@@ -46,6 +47,7 @@ func openWindowsGPUInventory() (gpuTelemetry, error) {
 	// are matched by native PCI + exact device instance ID, never by ADL
 	// logical-adapter ordinal. Missing AMD telemetry is nonfatal.
 	out.amd, _ = openAMDADL(devices)
+	out.intel, _ = openIntelIGCL(devices)
 	owner, err := openNVML()
 	if err != nil {
 		// Intel/AMD devices remain enumerated but N/A until a corresponding
@@ -122,6 +124,10 @@ func (g *windowsGPUInventory) Close() {
 		g.amd.Close()
 		g.amd = nil
 	}
+	if g.intel != nil {
+		g.intel.Close()
+		g.intel = nil
+	}
 	g.bound = map[int]*nvmlSensor{}
 }
 func (g *windowsGPUInventory) Devices() []hardwareDevice {
@@ -140,6 +146,16 @@ func (g *windowsGPUInventory) Devices() []hardwareDevice {
 				}
 			} else {
 				out[i].Driver = "ADL2 unavailable"
+			}
+		} else if out[i].Vendor == "Intel" {
+			if g.intel != nil {
+				if _, ok := g.intel.adapters[i]; ok {
+					out[i].Driver = "IGCL telemetry"
+				} else {
+					out[i].Driver = "IGCL unbound"
+				}
+			} else {
+				out[i].Driver = "IGCL unavailable"
 			}
 		} else {
 			out[i].Driver = "N/A (vendor backend not implemented)"
@@ -211,6 +227,11 @@ func (g *windowsGPUInventory) sample() {
 	}
 	if g.amd != nil {
 		for name, value := range g.amd.Sample() {
+			g.extra[name] = sampleValue{Value: value, Valid: true}
+		}
+	}
+	if g.intel != nil {
+		for name, value := range g.intel.Sample() {
 			g.extra[name] = sampleValue{Value: value, Valid: true}
 		}
 	}

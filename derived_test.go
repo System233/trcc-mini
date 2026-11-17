@@ -51,6 +51,8 @@ func TestDerivedInvalidConfig(t *testing.T) {
 		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu.power", "gpu0.power"}}},
 		{"overlap.estimated": {Operation: "sum", Sources: []string{"cpu.power", "cpu0.power.cores"}}},
 		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu0.power", "gpu0.power.board"}}},
+		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu1.power.asic", "gpu1.power.gfx"}}},
+		{"overlap.estimated": {Operation: "sum", Sources: []string{"gpu1.power.asic", "gpu1.power.soc"}}},
 		{"limit.estimated": {Operation: "sum", Sources: []string{"cpu.power", "gpu0.power.limit"}}},
 	}
 	for i, v := range bad {
