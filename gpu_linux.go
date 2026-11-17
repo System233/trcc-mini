@@ -40,6 +40,8 @@ type linuxGPU struct {
 	lastAttempt atomic.Int64
 	refreshing  atomic.Bool
 	intelEnergy intelEnergySampler
+	indexed     map[int]*linuxGPU
+	deviceCount int
 }
 
 func (g *linuxGPU) initialSample() linuxGPUSnapshot {
@@ -118,8 +120,12 @@ func (g *linuxGPU) collect() linuxGPUSnapshot {
 	if g.backend == "nvidia" {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
+		id := g.device
+		if id == "" {
+			id = "0"
+		}
 		output, e := exec.CommandContext(ctx, "nvidia-smi",
-			"--id=0",
+			"--id="+id,
 			"--query-gpu=temperature.gpu,utilization.gpu,power.draw,memory.used,memory.total",
 			"--format=csv,noheader,nounits").Output()
 		if e != nil {

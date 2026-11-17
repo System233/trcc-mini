@@ -382,7 +382,10 @@ func runDisplay(verb string, opts commandOptions, parent context.Context, ready 
 					var e error
 					stagedGPU, e = openGPUSensor()
 					if e != nil {
-						return fmt.Errorf("GPU enable requires available telemetry provider: %w", e)
+						// A sensor may be unplugged or its driver unavailable.
+						// It is not a configuration error: activate the valid
+						// settings, report N/A, and use the existing retry loop.
+						fmt.Fprintln(os.Stderr, "CONFIG: GPU telemetry unavailable, will retry:", e)
 					}
 				}
 				return nil

@@ -45,6 +45,19 @@ func TestLinuxNvidiaTelemetryParsing(t *testing.T) {
 	}
 }
 
+func TestLinuxNVMLPCIBusIdCanonicalization(t *testing.T) {
+	for input, want := range map[string]string{
+		"0000:01:00.0":     "00000000:01:00.0",
+		"0001:af:02.0":     "00000001:af:02.0",
+		"00000000:01:00.0": "00000000:01:00.0",
+		"invalid":          "",
+	} {
+		if got := normalizedNVIDIABusID(input); got != want {
+			t.Errorf("PCI ID %q => %q (want %q)", input, got, want)
+		}
+	}
+}
+
 func TestLinuxGPUBackgroundRefreshDoesNotBlockHIDLoop(t *testing.T) {
 	dir := t.TempDir()
 	flag := filepath.Join(dir, "updated")

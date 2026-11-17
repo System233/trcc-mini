@@ -267,7 +267,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw
 ```
 
-Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，AMD/Intel CPU 温度分别通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取；Intel 核显/Arc 通过 i915/xe 的设备级 hwmon 读取温度、能耗计数器并换算功率，能获得独立显存容量的 Arc 设备也提供 VRAM 指标。Intel GPU 的 `power1_max` 是功耗**上限**，不是当前功耗，不能作为采样结果；缺少 GPU 全局使用率计数器时不根据频率伪造负载。
+Linux CPU 利用率取自 `/proc/stat`，RAM 取自 `/proc/meminfo`，AMD/Intel CPU 温度分别通过 `k10temp` / `coretemp` hwmon 标签读取。CPU 功耗优先尝试 RAPL `energy_uj` 的时间差，或支持的 hwmon 功率属性；无可用硬件读数时返回 N/A，不伪造数据。NVIDIA GPU 通过驱动附带的 `nvidia-smi`（可选）读取，缓存约 1 秒，后台异步刷新避免阻塞 200ms 显示帧；AMD GPU 通过 amdgpu DRM/sysfs 与 hwmon 读取；Intel 核显/Arc 通过 i915/xe 的设备级 hwmon 读取温度、能耗计数器并换算功率，能获得独立显存容量的 Arc 设备也提供 VRAM 指标。**多 GPU 设备以 DRM PCI 地址排序：Linux 也支持 `gpu0`、`gpu1`，NVIDIA 通过 PCI Bus ID 而非 NVML 索引选择，所有可用读数聚合为 `gpu.*`。** Intel GPU 的 `power1_max` 是功耗**上限**，不是当前功耗，不能作为采样结果；缺少 GPU 全局使用率计数器时不根据频率伪造负载。
 
 systemd 服务直接复用 `run` 的热重载和停止信号处理。安装需要 root，且需预先准备有效 JSON（`device.pm` 不得为 0）：
 
@@ -304,7 +304,7 @@ macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/st
 
 `run` 与 Windows SCM、Linux systemd、macOS launchd 的服务进程**共同支持配置热重载**，不需要重启或附加守护进程。每约 500ms 读取 `trcc-mini.json` 并比对内容哈希；检测到新内容后使用同一套严格 JSON Schema 和业务规则校验，成功才一次性切换有效配置。可热更新采样周期、亮度、CPU 温度源、GPU 开关、显示区域、轮换、符号、颜色、主题及派生指标。改变采样周期时自动重置采样计时器；GPU 从关闭切换到开启时，须成功准备该平台的 GPU 采集器后才提交新配置。
 
-如果 JSON 不完整、某字段非法、文件被删除或新 GPU 资源无法初始化，则**拒绝本次重载，继续运行上一份有效配置**，并记录一条错误，不以默认配置覆盖现场值。编辑磁盘文件不会被程序自动回滚：请纠正 JSON 后再次保存。唯一明确不支持热切换的业务参数是 `device.pm`（硬件型号），修改时拒绝重载，需要停止并重启程序或服务。自定义配置文件路径只能在启动/安装时确定。
+如果 JSON 不完整、某字段非法、文件被删除，则**拒绝本次重载，继续运行上一份有效配置**，并记录一条错误，不以默认配置覆盖现场值。**GPU 暂时不存在、驱动尚未加载或某个设备传感器不可用并不属于配置错误：允许启用该设置，显示 N/A，后台继续尝试重新连接。**编辑磁盘文件不会被程序自动回滚：请纠正 JSON 后再次保存。唯一明确不支持热切换的业务参数是 `device.pm`（硬件型号），修改时拒绝重载，需要停止并重启程序或服务。自定义配置文件路径只能在启动/安装时确定。
 
 配置按内容哈希检测，即使编辑器保留文件时间戳也能识别有效修改。服务只负责自身显示循环，不会再次 HID 探测设备型号。
 
