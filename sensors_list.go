@@ -41,6 +41,9 @@ func enumerateSensorReadings() (sensorListing, error) {
 		snapshot.Load = int(math.Round(sample.Value))
 	}
 	if sensor, e := openCPUSensor(); e == nil {
+		if sampler, ok := sensor.(interface{ SetPCILockTimeout(time.Duration) }); ok {
+			sampler.SetPCILockTimeout(200 * time.Millisecond)
+		}
 		if value, e := sensor.ReadTemp("tctl"); e == nil {
 			snapshot.Temp, snapshot.TempValid = value, true
 		}

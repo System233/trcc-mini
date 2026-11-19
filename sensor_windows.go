@@ -6,8 +6,10 @@ package main
 import (
 	_ "embed"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -17,6 +19,10 @@ var pSystemTimes = dllKernel.NewProc("GetSystemTimes")
 var pIoctl = dllKernel.NewProc("DeviceIoControl")
 var pCreateMutex = dllKernel.NewProc("CreateMutexW")
 var pReleaseMutex = dllKernel.NewProc("ReleaseMutex")
+
+var errPCIMutexTimeout = errors.New("PCI bus busy (mutex timeout)")
+
+const displayPCIMutexWait = 10 // milliseconds; never block the HID frame loop
 
 type fileTime struct {
 	Low  uint32
@@ -63,6 +69,7 @@ var amdSignedModule []byte
 type pawnSensor struct {
 	handle       syscall.Handle
 	pciMutex     syscall.Handle
+	pciMutexWait uint32
 	lastTemp     float64
 	haveLast     bool
 	lastCCDTemp  map[string]float64
@@ -72,6 +79,45 @@ type pawnSensor struct {
 	lastWatts    float64
 	haveWatts    bool
 	powerInitErr error
+}
+
+// Diagnostics can afford to wait for another sampler; the live display cannot.
+func (p *pawnSensor) SetPCILockTimeout(timeout time.Duration) {
+	if timeout > 0 && timeout <= time.Second {
+		p.pciMutexWait = uint32(timeout / time.Millisecond)
+	}
+}
+
+// Windows mutex ownership is tied to an OS THREAD, not a goroutine. Keep
+// WaitForSingleObject, the indexed SMN operations and ReleaseMutex on one
+// thread; otherwise Go can migrate the goroutine and permanently strand the
+// cross-process mutex until the owning thread exits.
+func (p *pawnSensor) withPCILock(read func() error) (err error) {
+	if p == nil || p.pciMutex == 0 {
+		return errors.New("PCI mutex unavailable")
+	}
+	wait := p.pciMutexWait
+	if wait == 0 {
+		wait = displayPCIMutexWait
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	status, _, waitErr := pWait.Call(uintptr(p.pciMutex), uintptr(wait))
+	switch uint32(status) {
+	case 0, 0x80: // WAIT_OBJECT_0, WAIT_ABANDONED: both grant ownership
+	case 0x102: // WAIT_TIMEOUT
+		return errPCIMutexTimeout
+	case 0xffffffff: // WAIT_FAILED
+		return fmt.Errorf("WaitForSingleObject(Access_PCI): %w", winError(waitErr))
+	default:
+		return fmt.Errorf("WaitForSingleObject(Access_PCI): unexpected status %#x", status)
+	}
+	defer func() {
+		if ok, _, releaseErr := pReleaseMutex.Call(uintptr(p.pciMutex)); ok == 0 {
+			err = errors.Join(err, fmt.Errorf("ReleaseMutex(Access_PCI): %w", winError(releaseErr)))
+		}
+	}()
+	return read()
 }
 
 func openPawn() (*pawnSensor, error) {
@@ -141,16 +187,15 @@ func (p *pawnSensor) Read() (float64, error) {
 	// CPU Tctl is an indexed AMD SMN read: serialize against HWiNFO,
 	// LibreHardwareMonitor and other consumers using the same PCI mutex.
 	// Do not block the display loop if a different monitor is busy.
-	status, _, _ := pWait.Call(uintptr(p.pciMutex), 10)
-	if status != 0 && status != 128 {
-		if p.haveLast {
+	var v uint64
+	err := p.withPCILock(func() (err error) {
+		v, err = p.readSMNLocked(0x00059800)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, errPCIMutexTimeout) && p.haveLast {
 			return p.lastTemp, nil
 		}
-		return 0, fmt.Errorf("PCI bus busy (mutex timeout)")
-	}
-	defer pReleaseMutex.Call(uintptr(p.pciMutex))
-	v, err := p.readSMNLocked(0x00059800)
-	if err != nil {
 		return 0, err
 	}
 	t := float64(v>>21) * 0.125
@@ -195,14 +240,6 @@ func (p *pawnSensor) ReadTemp(source string) (float64, error) {
 	if !validCPUTempSource(source) {
 		return 0, fmt.Errorf("unknown CPU temperature source %q", source)
 	}
-	status, _, _ := pWait.Call(uintptr(p.pciMutex), 10)
-	if status != 0 && status != 128 {
-		if v, ok := p.lastCCDTemp[source]; ok {
-			return v, nil
-		}
-		return 0, fmt.Errorf("PCI bus busy (mutex timeout)")
-	}
-	defer pReleaseMutex.Call(uintptr(p.pciMutex))
 	count := 8
 	start := 0
 	if source == "ccd1" || source == "ccd2" {
@@ -214,23 +251,34 @@ func (p *pawnSensor) ReadTemp(source string) (float64, error) {
 	var sum, max float64
 	var valid int
 	var firstErr error
-	for i := start; i < start+count; i++ {
-		raw, err := p.readSMNLocked(0x00059B08 + uint64(i)*4)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+	err := p.withPCILock(func() error {
+		for i := start; i < start+count; i++ {
+			raw, err := p.readSMNLocked(0x00059B08 + uint64(i)*4)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
-			continue
+			value, ok := ccdTemperature(raw)
+			if !ok {
+				continue
+			}
+			valid++
+			sum += value
+			if value > max {
+				max = value
+			}
 		}
-		value, ok := ccdTemperature(raw)
-		if !ok {
-			continue
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errPCIMutexTimeout) {
+			if v, ok := p.lastCCDTemp[source]; ok {
+				return v, nil
+			}
 		}
-		valid++
-		sum += value
-		if value > max {
-			max = value
-		}
+		return 0, err
 	}
 	if valid == 0 {
 		if firstErr != nil {

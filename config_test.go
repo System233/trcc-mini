@@ -11,7 +11,7 @@ import (
 func TestAppConfigLifecycle(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "subdir", "trcc-mini.json")
 	cfg, err := readAppConfig(p)
-	if err != nil || cfg.Version != 3 || !cfg.Sensors.GPU || len(cfg.Display.Slots) != 4 || len(cfg.Display.Slots[cpuPrimary].Metrics) != 2 {
+	if err != nil || cfg.Version != 1 || !cfg.Sensors.GPU || len(cfg.Display.Slots) != 4 || len(cfg.Display.Slots[cpuPrimary].Metrics) != 2 {
 		t.Fatalf("built-in defaults missing: %+v %v", cfg, err)
 	}
 	if err = createAppConfig(p); err != nil {
@@ -72,7 +72,7 @@ func TestMetricConfigFileRoundtrip(t *testing.T) {
 	if loaded.Display.Slots[cpuPrimary].Metrics[1] != "system.power.estimated" {
 		t.Fatal("derived slot reference lost")
 	}
-	if loaded.Version != 3 {
+	if loaded.Version != 1 {
 		t.Fatal("wrong schema version")
 	}
 	if loaded.Display.RowLabels["cpu"] != "off" || loaded.Display.RowLabels["gpu"] != "on" {
@@ -96,7 +96,7 @@ func TestMetricConfigValidationFromJSON(t *testing.T) {
 		`"indicators":{"cpu.power":{"symbols":["GPU","C","F"]}}`,
 		`"indicators":{"gpu.power":{"symbols":["CPU","C","F"]}}`,
 	} {
-		b := []byte(`{"version":3,` + extra + `}`)
+		b := []byte(`{"version":1,` + extra + `}`)
 		if err := os.WriteFile(p, b, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -111,18 +111,19 @@ func TestAppConfigStrictValidation(t *testing.T) {
 	for _, v := range []string{
 		`{"version":999}`,
 		`{"version":2}`,
+		`{"version":3}`,
 		`{"version":1,"display":{"power":"rotate"}}`,
 		`{"version":1,"unknown":1}`,
-		`{"version":2,"display":{"brightness":150}}`,
-		`{"version":2,"display":{"power":"rotate"}}`,
-		`{"version":2,"display":{"powerInterval":"4s"}}`,
-		`{"version":2,"sensors":{"cpuTemperature":"diode"}}`,
-		`{"version":2,"theme":{"preset":"nonexistent"}}`,
-		`{"version":2,"theme":{"zones":{"cpu.typo":{"color":"#ffffff"}}}}`,
-		`{"version":2,"theme":{"zones":{"cpu.load":{"mode":"RGB"}}}}`,
-		`{"version":2,"theme":{"zones":{"gpu.temp":{"powerColor":"red"}}}}`,
-		`{"version":2,"theme":{"bogus":true}}`,
-		`{"version":2}{"version":2}`,
+		`{"version":1,"display":{"brightness":150}}`,
+		`{"version":1,"display":{"power":"rotate"}}`,
+		`{"version":1,"display":{"powerInterval":"4s"}}`,
+		`{"version":1,"sensors":{"cpuTemperature":"diode"}}`,
+		`{"version":1,"theme":{"preset":"nonexistent"}}`,
+		`{"version":1,"theme":{"zones":{"cpu.typo":{"color":"#ffffff"}}}}`,
+		`{"version":1,"theme":{"zones":{"cpu.load":{"mode":"RGB"}}}}`,
+		`{"version":1,"theme":{"zones":{"gpu.temp":{"powerColor":"red"}}}}`,
+		`{"version":1,"theme":{"bogus":true}}`,
+		`{"version":1}{"version":1}`,
 		`null`,
 		`{`,
 	} {
@@ -134,7 +135,7 @@ func TestAppConfigStrictValidation(t *testing.T) {
 		}
 	}
 	// A partial config inherits supported defaults, including the GPU row.
-	if err := os.WriteFile(p, []byte(`{"version":3,"sensors":{"cpuTemperature":"ccd-max"},"display":{"slots":{"cpu.primary":{"metrics":["cpu.power"]}}}}`), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(`{"version":1,"sensors":{"cpuTemperature":"ccd-max"},"display":{"slots":{"cpu.primary":{"metrics":["cpu.power"]}}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := readAppConfig(p)

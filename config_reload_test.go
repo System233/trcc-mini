@@ -40,7 +40,7 @@ func TestTransactionalReloadRejectsInvalidKeepsLastGood(t *testing.T) {
 	}
 
 	// File truncated by an editor: stay on the last valid snapshot.
-	if err := os.WriteFile(path, []byte(`{"version": 3,"display":`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version": 1,"display":`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := reloader.check(nil); ok || err == nil {
@@ -55,9 +55,9 @@ func TestTransactionalReloadRejectsInvalidKeepsLastGood(t *testing.T) {
 
 	// Unknown fields and semantic errors reject without partial application.
 	for _, bad := range []string{
-		`{"version":3,"display":{"brightness":101}}`,
-		`{"version":3,"display":{"bad":1}}`,
-		`{"version":3,"display":{"interval":"0s"}}`,
+		`{"version":1,"display":{"brightness":101}}`,
+		`{"version":1,"display":{"bad":1}}`,
+		`{"version":1,"display":{"interval":"0s"}}`,
 		`null`,
 	} {
 		if err := os.WriteFile(path, []byte(bad), 0600); err != nil {

@@ -18,6 +18,9 @@ func sensorDiagnostics() error {
 		fmt.Println("  CPU sensor: unavailable:", err)
 	} else {
 		defer pawn.Close()
+		if sampler, ok := pawn.(interface{ SetPCILockTimeout(time.Duration) }); ok {
+			sampler.SetPCILockTimeout(200 * time.Millisecond)
+		}
 		sources := []string{"tctl", "ccd1", "ccd2", "ccd-max", "ccd-avg"}
 		if vendor == "GenuineIntel" {
 			sources = []string{"tctl"} // package sensor, not AMD CCD

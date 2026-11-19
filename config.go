@@ -54,7 +54,7 @@ var zoneNames = []string{"cpu.temp", "cpu.load", "gpu.temp", "gpu.load"}
 
 func defaultAppConfig() appConfig {
 	var c appConfig
-	c.Version = 3
+	c.Version = 1
 	c.Indicators = make(map[string]indicatorConfig)
 	c.Derived = make(map[string]derivedConfig)
 	c.Sensors.CPUTemperature = "tctl" // no automatic fabricated 'CPU diode' conversion
@@ -132,8 +132,8 @@ func parseAppConfig(data []byte) (appConfig, error) {
 }
 
 func validateAppConfig(c appConfig) error {
-	if c.Version != 3 {
-		return fmt.Errorf("version must be 3 (got %d)", c.Version)
+	if c.Version != 1 {
+		return fmt.Errorf("version must be 1 (got %d)", c.Version)
 	}
 	if c.Device.PM < 0 || c.Device.PM > 255 {
 		return fmt.Errorf("device.pm must be 0..255")

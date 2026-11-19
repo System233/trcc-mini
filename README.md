@@ -44,7 +44,7 @@ notepad .\trcc-mini.json       # 编辑温度源、GPU、功耗、颜色/主题
 
 ```json
 {
-  "version": 3,
+  "version": 1,
   "device": { "pm": 0 },
   "sensors": {
     "cpuTemperature": "ccd-avg",
@@ -344,7 +344,7 @@ macOS 服务使用 launchd LaunchDaemon，命令同为 `service install/start/st
 后续周期才会得到实际瓦数。没有有效传感器数据时一律输出
 `N/A`，而不是把无效数值报告成真实的 `0W`。
 
-当前配置结构为 `version: 3`；不做运行时旧版配置迁移。
+当前配置结构为 `version: 1`；仅接受版本 1，不提供旧版兼容或运行时配置迁移。
 
 测试覆盖配置、严格 JSON 校验、CLI 参数拼写、PA120 四区域独立轮换与配色、100% 负载、无效传感器跳过、GPU 功耗、CPU 能耗计数器、段码及 HID 报文构造。真实设备写入、PawnIO 下的 CCD 传感器值仍需要管理员环境实测。
 
